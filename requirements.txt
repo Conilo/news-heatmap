@@ -1,0 +1,6 @@
+gnews==0.3.7
+ollama==0.6.1
+streamlit==1.56.0
+plotly==6.7.0
+pandas==3.0.2
+requests==2.33.1
