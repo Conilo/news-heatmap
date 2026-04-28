@@ -124,15 +124,27 @@ GROUP_ALIASES: dict[str, str] = {
     "jalisco nueva generación": "CJNG",
     "cartel de jalisco": "CJNG",
     "cártel de jalisco": "CJNG",
+    "cartel de jalisco nueva generacion": "CJNG",
+    "cartel de jalisco nueva generación": "CJNG",
+    "cártel de jalisco nueva generacion": "CJNG",
+    "cártel de jalisco nueva generación": "CJNG",
+    "el mencho": "CJNG",              # Nemesio Oseguera Cervantes, CJNG leader
+    "nemesio oseguera": "CJNG",
     # Cártel de Sinaloa
     "cartel de sinaloa": "Cártel de Sinaloa",
     "cártel de sinaloa": "Cártel de Sinaloa",
     "sinaloa cartel": "Cártel de Sinaloa",
-    "sinaloa": "Cártel de Sinaloa",   # only when used as group name
+    # NOTE: bare "sinaloa" removed — ambiguous with the state name
     "los chapitos": "Cártel de Sinaloa",
     "chapitos": "Cártel de Sinaloa",
     "ismael zambada": "Cártel de Sinaloa",
     "el mayo": "Cártel de Sinaloa",
+    "los salazar": "Los Salazar",     # Sinaloa-aligned faction, keep distinct
+    # Cártel del Pacífico  (keep distinct per user request)
+    "cartel del pacifico": "Cártel del Pacífico",
+    "cártel del pacifico": "Cártel del Pacífico",
+    "cartel del pacífico": "Cártel del Pacífico",
+    "cártel del pacífico": "Cártel del Pacífico",
     # Cártel del Golfo
     "cartel del golfo": "Cártel del Golfo",
     "cártel del golfo": "Cártel del Golfo",
@@ -141,7 +153,6 @@ GROUP_ALIASES: dict[str, str] = {
     # Los Zetas
     "los zetas": "Los Zetas",
     "zetas": "Los Zetas",
-    "z": "Los Zetas",
     # Cártel del Noreste
     "cartel del noreste": "Cártel del Noreste",
     "cártel del noreste": "Cártel del Noreste",
@@ -156,24 +167,63 @@ GROUP_ALIASES: dict[str, str] = {
     "familia michoacana": "La Familia Michoacana",
     "la familia michoacana": "La Familia Michoacana",
     "la familia": "La Familia Michoacana",
+    # Nueva Familia Michoacana (distinct from La Familia Michoacana)
+    "nueva familia michoacana": "Nueva Familia Michoacana",
+    "nueva familia": "Nueva Familia Michoacana",
     # Caballeros Templarios
     "caballeros templarios": "Caballeros Templarios",
     "los caballeros templarios": "Caballeros Templarios",
     "knights templar": "Caballeros Templarios",
     # Guerreros Unidos
     "guerreros unidos": "Guerreros Unidos",
-    # Viagra / Los Viagras
+    # Los Viagras
     "los viagras": "Los Viagras",
     "viagras": "Los Viagras",
 }
 
 
+import re as _re
+import unicodedata as _unicodedata
+
+
+def _strip_accents(s: str) -> str:
+    return "".join(
+        c for c in _unicodedata.normalize("NFD", s)
+        if _unicodedata.category(c) != "Mn"
+    )
+
+
 def normalize_group(name: str) -> str:
-    """Return the canonical group name for any known alias, else title-case the input."""
-    if not name:
+    """
+    Return the canonical group name for any known alias.
+
+    Three-step pipeline:
+      1. If the SLM returned comma-separated groups, take the first one.
+      2. Strip parenthetical abbreviations such as "(CJNG)" or "(CDG)".
+      3. Exact lowercase lookup, then accent-stripped fallback lookup.
+    """
+    if not name or name.strip().lower() in ("desconocido", "unknown", ""):
         return "Desconocido"
-    canonical = GROUP_ALIASES.get(name.strip().lower())
-    return canonical if canonical else name
+
+    # Step 1: take only the first group when multiple are comma-separated
+    first = name.split(",")[0].strip()
+
+    # Step 2: remove parenthetical content e.g. "(CJNG)" / "(Cártel del Golfo)"
+    cleaned = _re.sub(r"\s*\(.*?\)", "", first).strip()
+
+    # Step 3a: exact lowercase lookup
+    key = cleaned.lower()
+    if key in GROUP_ALIASES:
+        return GROUP_ALIASES[key]
+
+    # Step 3b: accent-stripped fallback (handles é/e, á/a mismatches)
+    key_no_accent = _strip_accents(key)
+    for alias_key, canonical in GROUP_ALIASES.items():
+        if _strip_accents(alias_key) == key_no_accent:
+            return canonical
+
+    # Return the cleaned string so parentheticals are at least removed
+    return cleaned
 
 
 # Cartel colors for the map (add more as needed)
@@ -182,11 +232,15 @@ GROUP_COLORS: dict[str, str] = {
     "CJNG": "#d62728",
     "Cártel del Golfo": "#2ca02c",
     "Los Zetas": "#9467bd",
-    "Cártel Jalisco Nueva Generación": "#d62728",
+    "Cártel del Pacífico": "#17becf",
     "Beltrán Leyva": "#8c564b",
     "La Familia Michoacana": "#e377c2",
+    "Nueva Familia Michoacana": "#f7b6d2",
     "Caballeros Templarios": "#7f7f7f",
     "Cártel del Noreste": "#bcbd22",
+    "Los Salazar": "#ffbb78",
+    "Guerreros Unidos": "#98df8a",
+    "Los Viagras": "#c5b0d5",
     "Desconocido": "#aec7e8",
 }
 

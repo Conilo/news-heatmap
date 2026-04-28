@@ -166,6 +166,7 @@ def _build_map(df: pd.DataFrame) -> go.Figure:
         coloraxis_colorbar={"title": "Incidentes"},
         height=560,
         clickmode="event+select",
+        dragmode=False,
     )
     return fig
 
@@ -499,6 +500,7 @@ def main() -> None:
         on_select="rerun",
         selection_mode="points",
         key="main_map",
+        config={"scrollZoom": False, "displayModeBar": False},
     )
 
     # ---- State detail panel ----
