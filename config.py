@@ -36,9 +36,9 @@ KEYWORDS = [
     "levanton",
     "desaparecido",
     "cjng",
-    "jalisco",     # Cártel Jalisco Nueva Generación shorthand context
-    "sinaloa cartel",
-    "gulf cartel",
+    "cartel jalisco nueva generación",
+    "cartel jalisco nueva generacion",
+    "cartel de sinaloa",
     "cartel del golfo",
     "los zetas",
     "zetas",
@@ -108,6 +108,73 @@ STATE_NAME_MAP: dict[str, str] = {
     "yucatán": "Yucatán",
     "zacatecas": "Zacatecas",
 }
+
+# ---------------------------------------------------------------------------
+# Group name canonicalization
+# ---------------------------------------------------------------------------
+# Maps any lowercase variant the SLM might produce → canonical display name.
+GROUP_ALIASES: dict[str, str] = {
+    # CJNG
+    "cjng": "CJNG",
+    "cartel jalisco nueva generacion": "CJNG",
+    "cartel jalisco nueva generación": "CJNG",
+    "cártel jalisco nueva generacion": "CJNG",
+    "cártel jalisco nueva generación": "CJNG",
+    "jalisco nueva generacion": "CJNG",
+    "jalisco nueva generación": "CJNG",
+    "cartel de jalisco": "CJNG",
+    "cártel de jalisco": "CJNG",
+    # Cártel de Sinaloa
+    "cartel de sinaloa": "Cártel de Sinaloa",
+    "cártel de sinaloa": "Cártel de Sinaloa",
+    "sinaloa cartel": "Cártel de Sinaloa",
+    "sinaloa": "Cártel de Sinaloa",   # only when used as group name
+    "los chapitos": "Cártel de Sinaloa",
+    "chapitos": "Cártel de Sinaloa",
+    "ismael zambada": "Cártel de Sinaloa",
+    "el mayo": "Cártel de Sinaloa",
+    # Cártel del Golfo
+    "cartel del golfo": "Cártel del Golfo",
+    "cártel del golfo": "Cártel del Golfo",
+    "gulf cartel": "Cártel del Golfo",
+    "cdg": "Cártel del Golfo",
+    # Los Zetas
+    "los zetas": "Los Zetas",
+    "zetas": "Los Zetas",
+    "z": "Los Zetas",
+    # Cártel del Noreste
+    "cartel del noreste": "Cártel del Noreste",
+    "cártel del noreste": "Cártel del Noreste",
+    "cdn": "Cártel del Noreste",
+    # Beltrán Leyva
+    "beltran leyva": "Beltrán Leyva",
+    "beltrán leyva": "Beltrán Leyva",
+    "organizacion beltran leyva": "Beltrán Leyva",
+    "organización beltrán leyva": "Beltrán Leyva",
+    "obl": "Beltrán Leyva",
+    # La Familia Michoacana
+    "familia michoacana": "La Familia Michoacana",
+    "la familia michoacana": "La Familia Michoacana",
+    "la familia": "La Familia Michoacana",
+    # Caballeros Templarios
+    "caballeros templarios": "Caballeros Templarios",
+    "los caballeros templarios": "Caballeros Templarios",
+    "knights templar": "Caballeros Templarios",
+    # Guerreros Unidos
+    "guerreros unidos": "Guerreros Unidos",
+    # Viagra / Los Viagras
+    "los viagras": "Los Viagras",
+    "viagras": "Los Viagras",
+}
+
+
+def normalize_group(name: str) -> str:
+    """Return the canonical group name for any known alias, else title-case the input."""
+    if not name:
+        return "Desconocido"
+    canonical = GROUP_ALIASES.get(name.strip().lower())
+    return canonical if canonical else name
+
 
 # Cartel colors for the map (add more as needed)
 GROUP_COLORS: dict[str, str] = {

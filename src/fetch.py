@@ -98,7 +98,7 @@ def fetch_articles(
     queries = [
         "cartel narco mexico",
         "crimen organizado mexico",
-        "cartel mexico narco drug",
+        "narco drogas",
     ]
 
     seen_urls: set[str] = set()
