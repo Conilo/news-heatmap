@@ -17,43 +17,13 @@ import config
 # Helpers
 # ---------------------------------------------------------------------------
 
-MEXICO_TERMS = [
-    "mexico",
-    "méxico",
-    "mexicano",
-    "mexicana",
-]
-
-MEXICO_STATES = [
-    "aguascalientes", "baja california", "baja california sur", "campeche",
-    "chiapas", "chihuahua", "coahuila", "colima", "durango", "guanajuato",
-    "guerrero", "hidalgo", "jalisco", "michoacán", "michoacan", "morelos",
-    "nayarit", "nuevo león", "nuevo leon", "oaxaca", "puebla", "querétaro",
-    "queretaro", "quintana roo", "san luis potosí", "san luis potosi",
-    "sinaloa", "sonora", "tabasco", "tamaulipas", "tlaxcala", "veracruz",
-    "yucatán", "yucatan", "zacatecas", "ciudad de méxico", "cdmx",
-    "estado de mexico", "estado de méxico",
-]
-
-_ALL_MEXICO_TERMS = set(MEXICO_TERMS + MEXICO_STATES)
+def _build_query(terms: list[str], geo: str) -> str:
+    """Build a Google News OR-query, quoting any multi-word terms."""
+    quoted = [f'"{t}"' if " " in t else t for t in terms]
+    return f"({' OR '.join(quoted)}) {geo}"
 
 
-def _is_mexico_related(article: dict[str, Any]) -> bool:
-    """Return True if the article appears to be about Mexico."""
-    text = " ".join([
-        (article.get("title") or ""),
-        (article.get("description") or ""),
-    ]).lower()
-    return any(term in text for term in _ALL_MEXICO_TERMS)
-
-
-def _is_crime_related(article: dict[str, Any]) -> bool:
-    """Return True if the article contains at least one crime keyword."""
-    text = " ".join([
-        (article.get("title") or ""),
-        (article.get("description") or ""),
-    ]).lower()
-    return any(kw.lower() in text for kw in config.KEYWORDS)
+QUERY = _build_query(config.FETCH_QUERY_TERMS, config.FETCH_QUERY_GEO)
 
 
 def _normalize_article(raw: dict[str, Any]) -> dict[str, Any]:
@@ -79,12 +49,11 @@ def fetch_articles(
     """
     Fetch Google News articles related to Mexico crime/cartels.
 
-    Runs two passes:
-      1. English query  ("mexico cartel narco")
-      2. Spanish query  ("cartel mexico narco")
-
-    Each article is deduplicated by URL, then filtered for Mexico content
-    and cartel/crime keywords.
+    Issues a single OR-combined Google News query (see `QUERY`, built from
+    `config.FETCH_QUERY_TERMS`) and trusts Google's keyword matching against
+    title/description plus the MX news edition (`country=MX, language=es`)
+    plus the `mexico` token in the query for geographic filtering. No
+    post-filter is applied — articles are only deduplicated by URL.
 
     Returns a list of normalized article dicts.
     """
@@ -95,39 +64,28 @@ def fetch_articles(
         max_results=max_results,
     )
 
-    queries = [
-        "cartel narco mexico",
-        "crimen organizado mexico",
-        "narco drogas",
-    ]
+    try:
+        results = client.get_news(QUERY)
+    except Exception as exc:
+        print(f"[fetch] Warning: query failed — {exc}")
+        return []
 
     seen_urls: set[str] = set()
     articles: list[dict[str, Any]] = []
 
-    for query in queries:
-        try:
-            results = client.get_news(query)
-        except Exception as exc:
-            print(f"[fetch] Warning: query '{query}' failed — {exc}")
+    for raw in results or []:
+        normalized = _normalize_article(raw)
+        url = normalized["url"]
+        if not url or url in seen_urls:
             continue
+        seen_urls.add(url)
 
-        for raw in results or []:
-            normalized = _normalize_article(raw)
-            url = normalized["url"]
-            if not url or url in seen_urls:
-                continue
-            seen_urls.add(url)
-
-            if _is_mexico_related(normalized) and _is_crime_related(normalized):
-                articles.append(normalized)
-
-            if len(articles) >= max_results:
-                break
+        articles.append(normalized)
 
         if len(articles) >= max_results:
             break
 
-    print(f"[fetch] {len(articles)} articles after filtering.")
+    print(f"[fetch] {len(articles)} articles fetched.")
     return articles
 
 

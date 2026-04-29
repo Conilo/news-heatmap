@@ -44,7 +44,7 @@ Edit `config.py` to change:
 - `MODEL_NAME` — Ollama model (e.g. `"llama3.2:3b"`, `"phi3:mini"`, `"gemma3:4b"`)
 - `LOOKBACK_DAYS` — how many days back to fetch news
 - `MAX_ARTICLES` — cap on articles fetched per run
-- `KEYWORDS` — cartel/crime terms used to filter articles
+- `FETCH_QUERY_TERMS` — terms used to build the Google News query (joined with OR; multi-word terms auto-quoted)
 
 ## Output
 
@@ -52,3 +52,13 @@ The dashboard shows:
 - **Choropleth map** of Mexico colored by incident count per state, with one color per criminal group
 - **Sidebar filters**: date range, group, crime type
 - **Article table** with title, extracted state/municipality, group, and crime type
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest                # fast unit tests only
+pytest --live         # also runs the live Google News statistical test
+```
+
+The `--live` test asserts that at least 95% of fetched articles are both crime-relevant and Mexico-relevant.

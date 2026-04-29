@@ -12,39 +12,24 @@ OLLAMA_HOST = "http://localhost:11434"
 LOOKBACK_DAYS = 7
 MAX_ARTICLES = 100   # cap per run to keep SLM calls manageable
 
-# Keywords used to filter cartel/crime-related articles.
-# Articles must contain at least one of these (case-insensitive).
-KEYWORDS = [
+# Terms used to build the Google News fetch query. Keep this list small
+# (~8-10 broad terms): long OR-chains dilute Google's relevance ranking.
+# Multi-word terms are auto-quoted by `fetch._build_query()`.
+# Specific cartel names (CJNG, Sinaloa, etc.) are implicitly covered by
+# `cartel`/`narco` and surface naturally in results.
+FETCH_QUERY_TERMS = [
     "cartel",
-    "cártel",
     "narco",
-    "narcotrafico",
-    "narcotráfico",
     "sicario",
     "crimen organizado",
-    "grupo delictivo",
     "fentanilo",
-    "plaza",       # as in "disputed plaza"
-    "halcon",
-    "halcón",
-    "capo",
     "homicidio",
-    "ejecución",
     "ejecutado",
-    "levantón",
-    "levanton",
-    "desaparecido",
-    "cjng",
-    "cartel jalisco nueva generación",
-    "cartel jalisco nueva generacion",
-    "cartel de sinaloa",
-    "cartel del golfo",
-    "zetas",
-    "beltrán leyva",
-    "beltran leyva",
-    "familia michoacana",
-    "caballeros templarios",
+    "grupo delictivo",
 ]
+
+# Geographic anchor appended to the query (implicit AND).
+FETCH_QUERY_GEO = "mexico"
 
 # ---------------------------------------------------------------------------
 # Paths
