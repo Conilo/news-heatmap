@@ -15,7 +15,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import config
-from store import append_new, get_processed_urls, load
+from store import append_new, get_processed_urls, load, update_rows
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -293,10 +293,14 @@ def _render_state_detail(df: pd.DataFrame, state_name: str) -> None:
 def _render_trend_charts(df: pd.DataFrame) -> None:
     st.subheader("Tendencias generales")
 
+    # Geographic subset — exclude non-state values from location-based charts
+    _NON_GEO = {"Desconocido", "Internacional"}
+    geo_df = df[~df["state"].apply(_normalize_state).isin(_NON_GEO)]
+
     col_left, col_right = st.columns(2)
 
     with col_left:
-        # Incidents over time (daily)
+        # Incidents over time (daily) — all articles, not just geo-located
         if "published_date" in df.columns:
             trend = (
                 df.copy()
@@ -309,7 +313,7 @@ def _render_trend_charts(df: pd.DataFrame) -> None:
                 trend,
                 x="date",
                 y="incidentes",
-                title="Incidentes por día",
+                title="Incidentes por día (total)",
                 markers=True,
                 labels={"date": "Fecha", "incidentes": "Incidentes"},
             )
@@ -317,31 +321,34 @@ def _render_trend_charts(df: pd.DataFrame) -> None:
             st.plotly_chart(fig_trend, use_container_width=True)
 
     with col_right:
-        # Top 10 states
-        top_states = (
-            df.copy()
-            .assign(state_norm=lambda d: d["state"].apply(_normalize_state))
-            .groupby("state_norm")
-            .size()
-            .reset_index(name="incidentes")
-            .sort_values("incidentes", ascending=True)
-            .tail(10)
-        )
-        fig_states = px.bar(
-            top_states,
-            x="incidentes",
-            y="state_norm",
-            orientation="h",
-            title="Top 10 estados",
-            labels={"state_norm": "Estado", "incidentes": "Incidentes"},
-        )
-        fig_states.update_layout(height=320, margin={"t": 40, "b": 0, "l": 0, "r": 0})
-        st.plotly_chart(fig_states, use_container_width=True)
+        # Top 10 states — geo_df only (no Desconocido / Internacional)
+        if geo_df.empty:
+            st.info("No hay datos geolocalizados para mostrar estados.")
+        else:
+            top_states = (
+                geo_df.copy()
+                .assign(state_norm=lambda d: d["state"].apply(_normalize_state))
+                .groupby("state_norm")
+                .size()
+                .reset_index(name="incidentes")
+                .sort_values("incidentes", ascending=True)
+                .tail(10)
+            )
+            fig_states = px.bar(
+                top_states,
+                x="incidentes",
+                y="state_norm",
+                orientation="h",
+                title="Top 10 estados (geolocalizados)",
+                labels={"state_norm": "Estado", "incidentes": "Incidentes"},
+            )
+            fig_states.update_layout(height=320, margin={"t": 40, "b": 0, "l": 0, "r": 0})
+            st.plotly_chart(fig_states, use_container_width=True)
 
     col_left2, col_right2 = st.columns(2)
 
     with col_left2:
-        # Top groups
+        # Top groups — all articles (group doesn't require a state)
         top_groups = (
             df[df["group"] != "Desconocido"]
             .groupby("group")
@@ -363,9 +370,9 @@ def _render_trend_charts(df: pd.DataFrame) -> None:
             st.plotly_chart(fig_groups, use_container_width=True)
 
     with col_right2:
-        # Top municipalities
+        # Top municipalities — geo_df only (exclude Desconocido municipalities too)
         top_munis = (
-            df[df["municipality"] != "Desconocido"]
+            geo_df[geo_df["municipality"] != "Desconocido"]
             .groupby("municipality")
             .size()
             .reset_index(name="incidentes")
@@ -378,11 +385,40 @@ def _render_trend_charts(df: pd.DataFrame) -> None:
                 x="incidentes",
                 y="municipality",
                 orientation="h",
-                title="Top municipios",
+                title="Top municipios (geolocalizados)",
                 labels={"municipality": "Municipio", "incidentes": "Incidentes"},
             )
             fig_munis.update_layout(height=300, margin={"t": 40, "b": 0, "l": 0, "r": 0})
             st.plotly_chart(fig_munis, use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
+# Re-process unknown states
+# ---------------------------------------------------------------------------
+
+def _reprocess_unknown_states() -> None:
+    """Re-run SLM extraction on all cached articles with state == 'Desconocido'."""
+    from extract import extract_article
+
+    df = load()
+    unknown = df[df["state"] == "Desconocido"]
+
+    if unknown.empty:
+        st.info("No hay artículos con estado Desconocido para reprocesar.")
+        return
+
+    records = unknown.to_dict("records")
+    progress = st.progress(0, text=f"Re-procesando {len(records)} artículos...")
+    updated = []
+    for i, row in enumerate(records):
+        updated.append(extract_article(row))
+        progress.progress((i + 1) / len(records), text=f"Re-procesando {i + 1}/{len(records)}")
+
+    progress.empty()
+    update_rows(updated)
+    resolved = sum(1 for r in updated if r.get("state", "Desconocido") != "Desconocido")
+    st.success(f"Re-procesados {len(updated)} artículos — {resolved} ahora tienen estado.")
+    st.cache_data.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +439,10 @@ def main() -> None:
 
         if st.button("🔄 Refresh (fetch + extract)", use_container_width=True):
             _run_pipeline()
+            st.rerun()
+
+        if st.button("🔁 Re-process unknown states", use_container_width=True):
+            _reprocess_unknown_states()
             st.rerun()
 
         st.divider()
@@ -475,17 +515,20 @@ def main() -> None:
         return
 
     # ---- Top metrics ----
-    m1, m2, m3, m4 = st.columns(4)
+    _state_norm = df["state"].apply(_normalize_state)
+    n_internacional = int((_state_norm == "Internacional").sum())
+    n_desconocido = int((_state_norm == "Desconocido").sum())
+    n_geo = len(df) - n_internacional - n_desconocido
+
+    m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Artículos", len(df))
-    m2.metric(
-        "Estados afectados",
-        df["state"].apply(_normalize_state).nunique(),
-    )
-    m3.metric(
+    m2.metric("Geolocalizados", n_geo)
+    m3.metric("Internacional", n_internacional)
+    m4.metric(
         "Grupos identificados",
         df[df["group"] != "Desconocido"]["group"].nunique(),
     )
-    m4.metric("Tipos de crimen", df["crime_type"].nunique())
+    m5.metric("Tipos de crimen", df["crime_type"].nunique())
 
     st.divider()
 

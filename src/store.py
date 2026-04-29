@@ -84,3 +84,30 @@ def get_processed_urls() -> set[str]:
     """Return the set of URLs already in the CSV (already SLM-processed)."""
     df = load()
     return set(df["url"].dropna().tolist())
+
+
+def update_rows(updated: list[dict]) -> pd.DataFrame:
+    """
+    Overwrite existing rows in the CSV by URL with new extracted field values.
+
+    Only rows whose URL already exists in the CSV are updated.
+    Returns the full updated DataFrame.
+    """
+    if not updated:
+        return load()
+
+    df = load()
+    updated_df = pd.DataFrame(updated)
+
+    # Align columns
+    for col in config.CSV_COLUMNS:
+        if col not in updated_df.columns:
+            updated_df[col] = ""
+    updated_df = updated_df[config.CSV_COLUMNS]
+
+    df = df.set_index("url")
+    df.update(updated_df.set_index("url"))
+    result = df.reset_index()[config.CSV_COLUMNS]
+    save(result)
+    print(f"[store] Updated {len(updated)} rows in-place.")
+    return result
