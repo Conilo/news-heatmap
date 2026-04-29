@@ -86,6 +86,27 @@ def get_processed_urls() -> set[str]:
     return set(df["url"].dropna().tolist())
 
 
+def load_events() -> pd.DataFrame:
+    """Load the events CSV into a DataFrame. Returns empty DataFrame if missing."""
+    if not os.path.exists(config.EVENTS_CSV):
+        return pd.DataFrame(columns=config.EVENTS_CSV_COLUMNS)
+    try:
+        df = pd.read_csv(config.EVENTS_CSV, dtype=str)
+        for col in config.EVENTS_CSV_COLUMNS:
+            if col not in df.columns:
+                df[col] = ""
+        return df[config.EVENTS_CSV_COLUMNS]
+    except Exception as exc:
+        print(f"[store] Warning: could not read events CSV — {exc}")
+        return pd.DataFrame(columns=config.EVENTS_CSV_COLUMNS)
+
+
+def save_events(df: pd.DataFrame) -> None:
+    """Persist the events DataFrame to CSV."""
+    _ensure_data_dir()
+    df[config.EVENTS_CSV_COLUMNS].to_csv(config.EVENTS_CSV, index=False)
+
+
 def update_rows(updated: list[dict]) -> pd.DataFrame:
     """
     Overwrite existing rows in the CSV by URL with new extracted field values.

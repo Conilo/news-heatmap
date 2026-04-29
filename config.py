@@ -24,7 +24,6 @@ KEYWORDS = [
     "crimen organizado",
     "grupo delictivo",
     "fentanilo",
-    "fentanyl",
     "plaza",       # as in "disputed plaza"
     "halcon",
     "halcón",
@@ -40,7 +39,6 @@ KEYWORDS = [
     "cartel jalisco nueva generacion",
     "cartel de sinaloa",
     "cartel del golfo",
-    "los zetas",
     "zetas",
     "beltrán leyva",
     "beltran leyva",
@@ -53,7 +51,27 @@ KEYWORDS = [
 # ---------------------------------------------------------------------------
 DATA_DIR = "data"
 ARTICLES_CSV = f"{DATA_DIR}/articles.csv"
+EVENTS_CSV = f"{DATA_DIR}/events.csv"
 GEOJSON_PATH = "assets/mexico.geojson"
+
+# ---------------------------------------------------------------------------
+# Event clustering
+# ---------------------------------------------------------------------------
+CLUSTER_WINDOW_DAYS = 3   # articles within this many days share a date bucket
+
+EVENTS_CSV_COLUMNS = [
+    "event_id",
+    "state",
+    "municipality",
+    "group",
+    "crime_type",
+    "first_seen",
+    "last_seen",
+    "article_count",
+    "unique_sources",
+    "confidence",
+    "canonical_title",
+]
 
 # ---------------------------------------------------------------------------
 # CSV schema — column names kept in one place
@@ -259,4 +277,5 @@ CSV_COLUMNS = [
     "crime_type",
     "confidence",
     "processed_at",
+    "event_id",
 ]

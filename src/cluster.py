@@ -1,0 +1,292 @@
+"""
+Cluster articles into deduplicated events.
+
+Stage 1 (always runs): group articles by
+    (normalized_state, normalized_group, crime_type, date_bucket)
+where date_bucket = floor(days_since_epoch / CLUSTER_WINDOW_DAYS).
+
+Stage 2 (optional, SLM): for cross-key candidate pairs that share the same
+group + date_bucket but differ on state or crime_type, ask the SLM whether
+they describe the same specific incident and merge if confirmed.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+import uuid
+from typing import Any
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+import pandas as pd
+
+import config
+from config import normalize_group
+from store import load, load_events, save, save_events
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+_EPOCH = pd.Timestamp("1970-01-01", tz="UTC")
+_NON_GEO = {"Desconocido", "Internacional"}
+
+
+def _date_bucket(date_val: Any) -> int:
+    """Convert a date/timestamp to a CLUSTER_WINDOW_DAYS bucket integer."""
+    try:
+        ts = pd.to_datetime(date_val, utc=True)
+        if pd.isna(ts):
+            return -1
+        delta = ts - _EPOCH
+        return int(delta.days // config.CLUSTER_WINDOW_DAYS)
+    except Exception:
+        return -1
+
+
+def _normalize_state(state: str) -> str:
+    key = (state or "").strip().lower()
+    return config.STATE_NAME_MAP.get(key, state)
+
+
+def _cluster_key(row: pd.Series) -> tuple:
+    """Return the Stage-1 grouping key for a single article row."""
+    return (
+        _normalize_state(str(row.get("state", ""))),
+        normalize_group(str(row.get("group", ""))),
+        str(row.get("crime_type", "otro")),
+        _date_bucket(row.get("published_date")),
+    )
+
+
+def _most_common(series: pd.Series, exclude: set[str] | None = None) -> str:
+    """Return the most common non-excluded value, or the overall most common."""
+    s = series.dropna().astype(str)
+    if exclude:
+        filtered = s[~s.isin(exclude)]
+        if not filtered.empty:
+            return filtered.mode().iloc[0]
+    if s.empty:
+        return "Desconocido"
+    return s.mode().iloc[0]
+
+
+def _compute_confidence(group_df: pd.DataFrame) -> float:
+    """
+    confidence = min(1.0, mean_article_confidence + 0.05 * (unique_sources - 1))
+    """
+    confs = pd.to_numeric(group_df["confidence"], errors="coerce").dropna()
+    mean_conf = float(confs.mean()) if not confs.empty else 0.0
+    unique_sources = group_df["source"].dropna().nunique()
+    score = mean_conf + 0.05 * max(0, unique_sources - 1)
+    return round(min(1.0, score), 4)
+
+
+def _build_event_row(event_id: str, group_df: pd.DataFrame) -> dict:
+    """Aggregate a group of articles into a single event dict."""
+    dates = pd.to_datetime(group_df["published_date"], errors="coerce", utc=True)
+    confs = pd.to_numeric(group_df["confidence"], errors="coerce")
+
+    # Pick canonical title from the highest-confidence article
+    best_idx = confs.idxmax() if not confs.dropna().empty else group_df.index[0]
+    canonical_title = str(group_df.loc[best_idx, "title"])
+
+    return {
+        "event_id": event_id,
+        "state": _most_common(group_df["state"].apply(_normalize_state)),
+        "municipality": _most_common(group_df["municipality"], exclude={"Desconocido"}),
+        "group": _most_common(group_df["group"].apply(normalize_group), exclude={"Desconocido"}),
+        "crime_type": _most_common(group_df["crime_type"]),
+        "first_seen": dates.min().isoformat() if not dates.dropna().empty else "",
+        "last_seen": dates.max().isoformat() if not dates.dropna().empty else "",
+        "article_count": len(group_df),
+        "unique_sources": int(group_df["source"].dropna().nunique()),
+        "confidence": _compute_confidence(group_df),
+        "canonical_title": canonical_title,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 — SLM disambiguation (optional)
+# ---------------------------------------------------------------------------
+
+_SLM_DEDUP_PROMPT = """\
+Do the following two news headlines describe the exact same specific incident
+(same event, same location, same people involved)?
+
+Headline A: {a}
+Headline B: {b}
+
+Respond ONLY with valid JSON: {{"same_event": true/false, "confidence": 0.0-1.0}}
+"""
+
+
+def _slm_same_event(title_a: str, title_b: str) -> tuple[bool, float]:
+    """Ask the SLM whether two headlines describe the same event."""
+    try:
+        import ollama
+        prompt = _SLM_DEDUP_PROMPT.format(a=title_a, b=title_b)
+        response = ollama.chat(
+            model=config.MODEL_NAME,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0.0},
+        )
+        text = response["message"]["content"]
+        text = re.sub(r"```(?:json)?", "", text).strip()
+        data = json.loads(text)
+        return bool(data.get("same_event", False)), float(data.get("confidence", 0.5))
+    except Exception as exc:
+        print(f"[cluster] SLM disambiguation failed: {exc}")
+        return False, 0.0
+
+
+def _stage2_merge(
+    articles: pd.DataFrame,
+    key_to_event: dict[tuple, str],
+    use_slm: bool = True,
+) -> dict[tuple, str]:
+    """
+    For articles whose Stage-1 key differs only in state or crime_type but share
+    the same (group, date_bucket), optionally ask the SLM to merge them.
+
+    Returns updated key_to_event mapping.
+    """
+    if not use_slm:
+        return key_to_event
+
+    # Index articles by their Stage-1 key
+    articles = articles.copy()
+    articles["_key"] = articles.apply(_cluster_key, axis=1)
+    articles["_event_id"] = articles["_key"].map(key_to_event)
+
+    # Find candidate pairs: same group + date_bucket, different full key
+    articles["_group_norm"] = articles["group"].apply(normalize_group)
+    articles["_bucket"] = articles["published_date"].apply(_date_bucket)
+
+    # Group by (group, bucket) to find cross-key candidates
+    merge_map: dict[str, str] = {}  # old_event_id → new_event_id (canonical)
+
+    for _, bucket_group in articles.groupby(["_group_norm", "_bucket"]):
+        event_ids = bucket_group["_event_id"].unique()
+        if len(event_ids) <= 1:
+            continue
+
+        # Compare each pair of distinct event_ids
+        for i, eid_a in enumerate(event_ids):
+            for eid_b in event_ids[i + 1:]:
+                # Resolve through any already-established merges
+                canon_a = merge_map.get(eid_a, eid_a)
+                canon_b = merge_map.get(eid_b, eid_b)
+                if canon_a == canon_b:
+                    continue
+
+                title_a = bucket_group[bucket_group["_event_id"] == eid_a]["title"].iloc[0]
+                title_b = bucket_group[bucket_group["_event_id"] == eid_b]["title"].iloc[0]
+
+                same, _conf = _slm_same_event(str(title_a), str(title_b))
+                if same:
+                    # Merge eid_b → eid_a (keep alphabetically smaller for stability)
+                    keep = min(canon_a, canon_b)
+                    drop = max(canon_a, canon_b)
+                    merge_map[drop] = keep
+                    print(f"[cluster] Stage-2 merge: {drop[:8]}… → {keep[:8]}…")
+
+    if not merge_map:
+        return key_to_event
+
+    # Apply merge_map transitively to key_to_event
+    def _resolve(eid: str) -> str:
+        seen = set()
+        while eid in merge_map and eid not in seen:
+            seen.add(eid)
+            eid = merge_map[eid]
+        return eid
+
+    return {k: _resolve(v) for k, v in key_to_event.items()}
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def cluster_articles(
+    articles: pd.DataFrame,
+    use_slm: bool = False,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Cluster a DataFrame of articles into events.
+
+    Returns:
+        articles_df  — original columns + 'event_id'
+        events_df    — one row per deduplicated event
+    """
+    if articles.empty:
+        return articles.copy(), pd.DataFrame(columns=config.EVENTS_CSV_COLUMNS)
+
+    articles = articles.copy()
+
+    # Ensure event_id column exists
+    if "event_id" not in articles.columns:
+        articles["event_id"] = ""
+
+    # Stage 1: assign a UUID to each unique (state, group, crime_type, date_bucket)
+    key_to_event: dict[tuple, str] = {}
+    for idx, row in articles.iterrows():
+        key = _cluster_key(row)
+        if key not in key_to_event:
+            # Re-use existing event_id if the article already had one for this key
+            existing = articles.loc[idx, "event_id"]
+            key_to_event[key] = existing if existing else str(uuid.uuid4())
+
+    # Stage 2 (optional SLM disambiguation)
+    if use_slm:
+        key_to_event = _stage2_merge(articles, key_to_event, use_slm=True)
+
+    # Assign event_id back to articles
+    articles["event_id"] = articles.apply(
+        lambda r: key_to_event[_cluster_key(r)], axis=1
+    )
+
+    # Build events_df: one row per event_id
+    event_rows = []
+    for event_id, group_df in articles.groupby("event_id"):
+        event_rows.append(_build_event_row(str(event_id), group_df))
+
+    events_df = pd.DataFrame(event_rows, columns=config.EVENTS_CSV_COLUMNS)
+
+    return articles[config.CSV_COLUMNS], events_df
+
+
+def recompute_events(use_slm: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Reload articles.csv, re-run clustering from scratch, save both CSVs.
+
+    Returns (articles_df, events_df).
+    """
+    articles = load()
+    if articles.empty:
+        print("[cluster] No articles to cluster.")
+        return articles, pd.DataFrame(columns=config.EVENTS_CSV_COLUMNS)
+
+    print(f"[cluster] Clustering {len(articles)} articles (SLM={use_slm})…")
+    articles_out, events_out = cluster_articles(articles, use_slm=use_slm)
+
+    save(articles_out)
+    save_events(events_out)
+
+    n_events = len(events_out)
+    n_articles = len(articles_out)
+    ratio = n_articles / n_events if n_events else 0
+    print(
+        f"[cluster] Done: {n_articles} articles → {n_events} events "
+        f"(avg {ratio:.1f} articles/event)"
+    )
+    return articles_out, events_out
+
+
+if __name__ == "__main__":
+    arts, evts = recompute_events(use_slm=False)
+    print(evts[["state", "group", "crime_type", "article_count", "confidence", "canonical_title"]].to_string())

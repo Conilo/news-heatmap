@@ -1,4 +1,4 @@
-"""Streamlit dashboard — Mexico Cartel Heatmap (v2)."""
+"""Streamlit dashboard — Mexico Cartel Heatmap (v3, event deduplication)."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import config
-from store import append_new, get_processed_urls, load, update_rows
+from store import append_new, get_processed_urls, load, load_events, update_rows
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -52,9 +52,21 @@ def _normalize_state(state: str) -> str:
 
 
 def _apply_group_normalization(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalize the 'group' column in-place using GROUP_ALIASES."""
     df = df.copy()
     df["group"] = df["group"].apply(config.normalize_group)
+    return df
+
+
+def _prep_events(events_df: pd.DataFrame) -> pd.DataFrame:
+    """Parse dates and normalise group names in events DataFrame."""
+    df = events_df.copy()
+    df["first_seen"] = pd.to_datetime(df["first_seen"], errors="coerce", utc=True)
+    df["last_seen"] = pd.to_datetime(df["last_seen"], errors="coerce", utc=True)
+    df["article_count"] = pd.to_numeric(df["article_count"], errors="coerce").fillna(1).astype(int)
+    df["unique_sources"] = pd.to_numeric(df["unique_sources"], errors="coerce").fillna(1).astype(int)
+    df["confidence"] = pd.to_numeric(df["confidence"], errors="coerce").fillna(0.0)
+    df["group"] = df["group"].apply(config.normalize_group)
+    df["state"] = df["state"].apply(_normalize_state)
     return df
 
 
@@ -63,8 +75,9 @@ def _apply_group_normalization(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def _run_pipeline() -> None:
-    from fetch import fetch_articles
+    from cluster import recompute_events
     from extract import extract_article
+    from fetch import fetch_articles
 
     with st.spinner("Fetching articles from Google News..."):
         articles = fetch_articles(
@@ -93,311 +106,17 @@ def _run_pipeline() -> None:
 
     progress.empty()
     append_new(extracted)
-    st.success(f"Added {len(extracted)} new articles.")
+
+    with st.spinner("Clustering articles into events..."):
+        recompute_events(use_slm=False)
+
+    st.success(f"Added {len(extracted)} new articles and updated events.")
     st.cache_data.clear()
 
 
-# ---------------------------------------------------------------------------
-# Map builder
-# ---------------------------------------------------------------------------
-
-def _build_map(df: pd.DataFrame) -> go.Figure:
-    """
-    Build a Plotly choropleth of all 32 Mexico states.
-    States with zero incidents are shown in a neutral colour.
-    """
-    geojson = _load_geojson()
-
-    df = df.copy()
-    df["state_norm"] = df["state"].apply(_normalize_state)
-
-    # Aggregate: count incidents per state
-    state_counts = (
-        df.groupby("state_norm")
-        .size()
-        .reset_index(name="incidents")
-    )
-
-    # Top group per state for tooltip
-    top_group = (
-        df.groupby(["state_norm", "group"])
-        .size()
-        .reset_index(name="cnt")
-        .sort_values("cnt", ascending=False)
-        .drop_duplicates("state_norm")[["state_norm", "group"]]
-        .rename(columns={"group": "top_group"})
-    )
-
-    # Merge onto all-32-states baseline so every state appears
-    all_states = _all_state_names()
-    base = pd.DataFrame({"state_norm": all_states})
-    state_counts = (
-        base
-        .merge(state_counts, on="state_norm", how="left")
-        .merge(top_group, on="state_norm", how="left")
-        .fillna({"incidents": 0, "top_group": "—"})
-    )
-    state_counts["incidents"] = state_counts["incidents"].astype(int)
-
-    fig = px.choropleth(
-        state_counts,
-        geojson=geojson,
-        locations="state_norm",
-        featureidkey=config.GEOJSON_FEATURE_KEY,
-        color="incidents",
-        color_continuous_scale="YlOrRd",
-        hover_name="state_norm",
-        hover_data={"incidents": True, "top_group": True},
-        labels={"incidents": "Incidentes", "top_group": "Grupo principal"},
-        title="Incidentes por estado — clic para detalle",
-    )
-    fig.update_geos(
-        visible=False,
-        showcoastlines=False,
-        showland=True,
-        landcolor="#f5f5f5",
-        showcountries=True,
-        countrycolor="#cccccc",
-        lataxis_range=[14, 33],
-        lonaxis_range=[-118, -86],
-    )
-    fig.update_layout(
-        margin={"r": 0, "t": 40, "l": 0, "b": 0},
-        coloraxis_colorbar={"title": "Incidentes"},
-        height=560,
-        clickmode="event+select",
-        dragmode=False,
-    )
-    return fig
-
-
-# ---------------------------------------------------------------------------
-# State detail panel
-# ---------------------------------------------------------------------------
-
-def _render_state_detail(df: pd.DataFrame, state_name: str) -> None:
-    st.subheader(f"Detalle: {state_name}")
-
-    state_df = df[df["state"].apply(_normalize_state) == state_name].copy()
-
-    if state_df.empty:
-        st.info("No hay incidentes registrados para este estado en el período seleccionado.")
-        return
-
-    # Metrics
-    top_crime = (
-        state_df["crime_type"].value_counts().index[0]
-        if not state_df["crime_type"].dropna().empty
-        else "—"
-    )
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Incidentes", len(state_df))
-    m2.metric("Grupos activos", state_df[state_df["group"] != "Desconocido"]["group"].nunique())
-    m3.metric("Municipios", state_df["municipality"].nunique())
-    m4.metric("Tipo principal", top_crime)
-
-    col_left, col_right = st.columns(2)
-
-    with col_left:
-        # Incidents by group
-        group_counts = (
-            state_df.groupby("group")
-            .size()
-            .reset_index(name="incidentes")
-            .sort_values("incidentes", ascending=True)
-        )
-        fig_g = px.bar(
-            group_counts,
-            x="incidentes",
-            y="group",
-            orientation="h",
-            title="Incidentes por grupo",
-            labels={"group": "Grupo", "incidentes": "Incidentes"},
-        )
-        fig_g.update_layout(height=300, margin={"t": 40, "b": 0, "l": 0, "r": 0})
-        st.plotly_chart(fig_g, use_container_width=True)
-
-        # Crime type pie
-        crime_counts = state_df["crime_type"].value_counts().reset_index()
-        crime_counts.columns = ["crime_type", "count"]
-        fig_c = px.pie(
-            crime_counts,
-            names="crime_type",
-            values="count",
-            title="Tipos de crimen",
-        )
-        fig_c.update_layout(height=280, margin={"t": 40, "b": 0, "l": 0, "r": 0})
-        st.plotly_chart(fig_c, use_container_width=True)
-
-    with col_right:
-        # Top municipalities
-        muni_counts = (
-            state_df[state_df["municipality"] != "Desconocido"]
-            .groupby("municipality")
-            .size()
-            .reset_index(name="incidentes")
-            .sort_values("incidentes", ascending=True)
-            .tail(10)
-        )
-        if not muni_counts.empty:
-            fig_m = px.bar(
-                muni_counts,
-                x="incidentes",
-                y="municipality",
-                orientation="h",
-                title="Top municipios",
-                labels={"municipality": "Municipio", "incidentes": "Incidentes"},
-            )
-            fig_m.update_layout(height=300, margin={"t": 40, "b": 0, "l": 0, "r": 0})
-            st.plotly_chart(fig_m, use_container_width=True)
-
-        # Trend over time for this state
-        if "published_date" in state_df.columns:
-            trend = (
-                state_df.copy()
-                .assign(date=lambda d: pd.to_datetime(d["published_date"], errors="coerce", utc=True).dt.date)
-                .groupby("date")
-                .size()
-                .reset_index(name="incidentes")
-            )
-            fig_t = px.line(
-                trend,
-                x="date",
-                y="incidentes",
-                title="Tendencia",
-                markers=True,
-                labels={"date": "Fecha", "incidentes": "Incidentes"},
-            )
-            fig_t.update_layout(height=270, margin={"t": 40, "b": 0, "l": 0, "r": 0})
-            st.plotly_chart(fig_t, use_container_width=True)
-
-    # Recent articles
-    st.markdown("**Artículos recientes**")
-    art_cols = ["published_date", "title", "municipality", "group", "crime_type", "source"]
-    art_df = state_df[[c for c in art_cols if c in state_df.columns]].copy()
-    art_df["published_date"] = pd.to_datetime(
-        art_df["published_date"], errors="coerce", utc=True
-    ).dt.strftime("%Y-%m-%d")
-    st.dataframe(
-        art_df.sort_values("published_date", ascending=False).head(20),
-        use_container_width=True,
-        hide_index=True,
-        column_config={"title": st.column_config.TextColumn("Título", width="large")},
-    )
-
-
-# ---------------------------------------------------------------------------
-# Aggregate trend charts
-# ---------------------------------------------------------------------------
-
-def _render_trend_charts(df: pd.DataFrame) -> None:
-    st.subheader("Tendencias generales")
-
-    # Geographic subset — exclude non-state values from location-based charts
-    _NON_GEO = {"Desconocido", "Internacional"}
-    geo_df = df[~df["state"].apply(_normalize_state).isin(_NON_GEO)]
-
-    col_left, col_right = st.columns(2)
-
-    with col_left:
-        # Incidents over time (daily) — all articles, not just geo-located
-        if "published_date" in df.columns:
-            trend = (
-                df.copy()
-                .assign(date=lambda d: pd.to_datetime(d["published_date"], errors="coerce", utc=True).dt.date)
-                .groupby("date")
-                .size()
-                .reset_index(name="incidentes")
-            )
-            fig_trend = px.line(
-                trend,
-                x="date",
-                y="incidentes",
-                title="Incidentes por día (total)",
-                markers=True,
-                labels={"date": "Fecha", "incidentes": "Incidentes"},
-            )
-            fig_trend.update_layout(height=320, margin={"t": 40, "b": 0, "l": 0, "r": 0})
-            st.plotly_chart(fig_trend, use_container_width=True)
-
-    with col_right:
-        # Top 10 states — geo_df only (no Desconocido / Internacional)
-        if geo_df.empty:
-            st.info("No hay datos geolocalizados para mostrar estados.")
-        else:
-            top_states = (
-                geo_df.copy()
-                .assign(state_norm=lambda d: d["state"].apply(_normalize_state))
-                .groupby("state_norm")
-                .size()
-                .reset_index(name="incidentes")
-                .sort_values("incidentes", ascending=True)
-                .tail(10)
-            )
-            fig_states = px.bar(
-                top_states,
-                x="incidentes",
-                y="state_norm",
-                orientation="h",
-                title="Top 10 estados (geolocalizados)",
-                labels={"state_norm": "Estado", "incidentes": "Incidentes"},
-            )
-            fig_states.update_layout(height=320, margin={"t": 40, "b": 0, "l": 0, "r": 0})
-            st.plotly_chart(fig_states, use_container_width=True)
-
-    col_left2, col_right2 = st.columns(2)
-
-    with col_left2:
-        # Top groups — all articles (group doesn't require a state)
-        top_groups = (
-            df[df["group"] != "Desconocido"]
-            .groupby("group")
-            .size()
-            .reset_index(name="incidentes")
-            .sort_values("incidentes", ascending=True)
-            .tail(8)
-        )
-        if not top_groups.empty:
-            fig_groups = px.bar(
-                top_groups,
-                x="incidentes",
-                y="group",
-                orientation="h",
-                title="Grupos más activos",
-                labels={"group": "Grupo", "incidentes": "Incidentes"},
-            )
-            fig_groups.update_layout(height=300, margin={"t": 40, "b": 0, "l": 0, "r": 0})
-            st.plotly_chart(fig_groups, use_container_width=True)
-
-    with col_right2:
-        # Top municipalities — geo_df only (exclude Desconocido municipalities too)
-        top_munis = (
-            geo_df[geo_df["municipality"] != "Desconocido"]
-            .groupby("municipality")
-            .size()
-            .reset_index(name="incidentes")
-            .sort_values("incidentes", ascending=True)
-            .tail(8)
-        )
-        if not top_munis.empty:
-            fig_munis = px.bar(
-                top_munis,
-                x="incidentes",
-                y="municipality",
-                orientation="h",
-                title="Top municipios (geolocalizados)",
-                labels={"municipality": "Municipio", "incidentes": "Incidentes"},
-            )
-            fig_munis.update_layout(height=300, margin={"t": 40, "b": 0, "l": 0, "r": 0})
-            st.plotly_chart(fig_munis, use_container_width=True)
-
-
-# ---------------------------------------------------------------------------
-# Re-process unknown states
-# ---------------------------------------------------------------------------
-
 def _reprocess_unknown_states() -> None:
-    """Re-run SLM extraction on all cached articles with state == 'Desconocido'."""
+    """Re-run SLM extraction on cached articles with state == 'Desconocido'."""
+    from cluster import recompute_events
     from extract import extract_article
 
     df = load()
@@ -418,7 +137,318 @@ def _reprocess_unknown_states() -> None:
     update_rows(updated)
     resolved = sum(1 for r in updated if r.get("state", "Desconocido") != "Desconocido")
     st.success(f"Re-procesados {len(updated)} artículos — {resolved} ahora tienen estado.")
+
+    with st.spinner("Re-clustering events..."):
+        recompute_events(use_slm=False)
     st.cache_data.clear()
+
+
+def _recluster_events() -> None:
+    """Full re-clustering of all articles into events."""
+    from cluster import recompute_events
+
+    with st.spinner("Re-clustering all articles into events..."):
+        _, events = recompute_events(use_slm=False)
+    st.success(f"Re-clustered into {len(events)} events.")
+    st.cache_data.clear()
+
+
+# ---------------------------------------------------------------------------
+# Map builder  (driven by events)
+# ---------------------------------------------------------------------------
+
+def _build_map(events_df: pd.DataFrame) -> go.Figure:
+    """
+    Build a choropleth of all 32 Mexico states coloured by event count.
+    Events already have normalised state names.
+    """
+    geojson = _load_geojson()
+
+    geo = events_df[~events_df["state"].isin({"Desconocido", "Internacional"})].copy()
+
+    state_counts = (
+        geo.groupby("state")
+        .size()
+        .reset_index(name="eventos")
+    )
+
+    top_group = (
+        geo.groupby(["state", "group"])
+        .size()
+        .reset_index(name="cnt")
+        .sort_values("cnt", ascending=False)
+        .drop_duplicates("state")[["state", "group"]]
+        .rename(columns={"group": "top_group"})
+    )
+
+    all_states = _all_state_names()
+    base = pd.DataFrame({"state": all_states})
+    state_counts = (
+        base
+        .merge(state_counts, on="state", how="left")
+        .merge(top_group, on="state", how="left")
+        .fillna({"eventos": 0, "top_group": "—"})
+    )
+    state_counts["eventos"] = state_counts["eventos"].astype(int)
+
+    fig = px.choropleth(
+        state_counts,
+        geojson=geojson,
+        locations="state",
+        featureidkey=config.GEOJSON_FEATURE_KEY,
+        color="eventos",
+        color_continuous_scale="YlOrRd",
+        hover_name="state",
+        hover_data={"eventos": True, "top_group": True},
+        labels={"eventos": "Eventos", "top_group": "Grupo principal"},
+        title="Eventos por estado — clic para detalle",
+    )
+    fig.update_geos(
+        visible=False,
+        showcoastlines=False,
+        showland=True,
+        landcolor="#f5f5f5",
+        showcountries=True,
+        countrycolor="#cccccc",
+        lataxis_range=[14, 33],
+        lonaxis_range=[-118, -86],
+    )
+    fig.update_layout(
+        margin={"r": 0, "t": 40, "l": 0, "b": 0},
+        coloraxis_colorbar={"title": "Eventos"},
+        height=560,
+        clickmode="event+select",
+        dragmode=False,
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# State detail panel  (events + article sub-list)
+# ---------------------------------------------------------------------------
+
+def _render_state_detail(
+    events_df: pd.DataFrame,
+    articles_df: pd.DataFrame,
+    state_name: str,
+) -> None:
+    st.subheader(f"Detalle: {state_name}")
+
+    state_events = events_df[events_df["state"] == state_name].copy()
+
+    if state_events.empty:
+        st.info("No hay eventos registrados para este estado en el período seleccionado.")
+        return
+
+    top_crime = (
+        state_events["crime_type"].value_counts().index[0]
+        if not state_events["crime_type"].dropna().empty
+        else "—"
+    )
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Eventos", len(state_events))
+    m2.metric("Artículos vinculados", int(state_events["article_count"].sum()))
+    m3.metric("Grupos activos", state_events[state_events["group"] != "Desconocido"]["group"].nunique())
+    m4.metric("Tipo principal", top_crime)
+
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        group_counts = (
+            state_events.groupby("group")
+            .size()
+            .reset_index(name="eventos")
+            .sort_values("eventos", ascending=True)
+        )
+        fig_g = px.bar(
+            group_counts,
+            x="eventos", y="group", orientation="h",
+            title="Eventos por grupo",
+            labels={"group": "Grupo", "eventos": "Eventos"},
+        )
+        fig_g.update_layout(height=300, margin={"t": 40, "b": 0, "l": 0, "r": 0})
+        st.plotly_chart(fig_g, use_container_width=True)
+
+        crime_counts = state_events["crime_type"].value_counts().reset_index()
+        crime_counts.columns = ["crime_type", "count"]
+        fig_c = px.pie(
+            crime_counts, names="crime_type", values="count",
+            title="Tipos de crimen",
+        )
+        fig_c.update_layout(height=280, margin={"t": 40, "b": 0, "l": 0, "r": 0})
+        st.plotly_chart(fig_c, use_container_width=True)
+
+    with col_right:
+        muni_counts = (
+            state_events[state_events["municipality"] != "Desconocido"]
+            .groupby("municipality")
+            .size()
+            .reset_index(name="eventos")
+            .sort_values("eventos", ascending=True)
+            .tail(10)
+        )
+        if not muni_counts.empty:
+            fig_m = px.bar(
+                muni_counts,
+                x="eventos", y="municipality", orientation="h",
+                title="Top municipios",
+                labels={"municipality": "Municipio", "eventos": "Eventos"},
+            )
+            fig_m.update_layout(height=300, margin={"t": 40, "b": 0, "l": 0, "r": 0})
+            st.plotly_chart(fig_m, use_container_width=True)
+
+        trend = (
+            state_events.copy()
+            .assign(date=lambda d: d["first_seen"].dt.date)
+            .groupby("date")
+            .size()
+            .reset_index(name="eventos")
+        )
+        if not trend.empty:
+            fig_t = px.line(
+                trend, x="date", y="eventos",
+                title="Tendencia de eventos",
+                markers=True,
+                labels={"date": "Fecha", "eventos": "Eventos"},
+            )
+            fig_t.update_layout(height=270, margin={"t": 40, "b": 0, "l": 0, "r": 0})
+            st.plotly_chart(fig_t, use_container_width=True)
+
+    # ---- Event list with expandable article sub-lists ----
+    st.markdown("**Eventos registrados**")
+    state_events_sorted = state_events.sort_values("first_seen", ascending=False)
+
+    # Join articles
+    state_articles = articles_df[
+        articles_df["state"].apply(_normalize_state) == state_name
+    ].copy() if not articles_df.empty else pd.DataFrame()
+
+    for _, ev in state_events_sorted.iterrows():
+        label = (
+            f"[{ev['crime_type'].upper()}] {ev['canonical_title'][:80]} "
+            f"— {ev['group']} "
+            f"({ev['article_count']} art., conf {float(ev['confidence']):.2f})"
+        )
+        with st.expander(label):
+            ec1, ec2, ec3 = st.columns(3)
+            ec1.metric("Artículos", int(ev["article_count"]))
+            ec2.metric("Fuentes únicas", int(ev["unique_sources"]))
+            ec3.metric("Confianza", f"{float(ev['confidence']):.2f}")
+
+            if not state_articles.empty and "event_id" in state_articles.columns:
+                ev_articles = state_articles[state_articles["event_id"] == ev["event_id"]]
+                if not ev_articles.empty:
+                    art_display = ev_articles[
+                        ["published_date", "title", "source", "confidence"]
+                    ].copy()
+                    art_display["published_date"] = pd.to_datetime(
+                        art_display["published_date"], errors="coerce", utc=True
+                    ).dt.strftime("%Y-%m-%d")
+                    art_display["confidence"] = pd.to_numeric(
+                        art_display["confidence"], errors="coerce"
+                    ).round(2)
+                    st.dataframe(
+                        art_display.sort_values("published_date", ascending=False),
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "title": st.column_config.TextColumn("Título", width="large"),
+                            "confidence": st.column_config.ProgressColumn(
+                                "Conf.", min_value=0, max_value=1
+                            ),
+                        },
+                    )
+
+
+# ---------------------------------------------------------------------------
+# Aggregate trend charts  (driven by events)
+# ---------------------------------------------------------------------------
+
+def _render_trend_charts(events_df: pd.DataFrame) -> None:
+    st.subheader("Tendencias generales")
+
+    _NON_GEO = {"Desconocido", "Internacional"}
+    geo_events = events_df[~events_df["state"].isin(_NON_GEO)]
+
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        trend = (
+            events_df.copy()
+            .assign(date=lambda d: d["first_seen"].dt.date)
+            .groupby("date")
+            .size()
+            .reset_index(name="eventos")
+        )
+        if not trend.empty:
+            fig_trend = px.line(
+                trend, x="date", y="eventos",
+                title="Eventos por día (total)",
+                markers=True,
+                labels={"date": "Fecha", "eventos": "Eventos"},
+            )
+            fig_trend.update_layout(height=320, margin={"t": 40, "b": 0, "l": 0, "r": 0})
+            st.plotly_chart(fig_trend, use_container_width=True)
+
+    with col_right:
+        if geo_events.empty:
+            st.info("No hay datos geolocalizados para mostrar estados.")
+        else:
+            top_states = (
+                geo_events.groupby("state")
+                .size()
+                .reset_index(name="eventos")
+                .sort_values("eventos", ascending=True)
+                .tail(10)
+            )
+            fig_states = px.bar(
+                top_states,
+                x="eventos", y="state", orientation="h",
+                title="Top 10 estados (geolocalizados)",
+                labels={"state": "Estado", "eventos": "Eventos"},
+            )
+            fig_states.update_layout(height=320, margin={"t": 40, "b": 0, "l": 0, "r": 0})
+            st.plotly_chart(fig_states, use_container_width=True)
+
+    col_left2, col_right2 = st.columns(2)
+
+    with col_left2:
+        top_groups = (
+            events_df[events_df["group"] != "Desconocido"]
+            .groupby("group")
+            .size()
+            .reset_index(name="eventos")
+            .sort_values("eventos", ascending=True)
+            .tail(8)
+        )
+        if not top_groups.empty:
+            fig_groups = px.bar(
+                top_groups,
+                x="eventos", y="group", orientation="h",
+                title="Grupos más activos",
+                labels={"group": "Grupo", "eventos": "Eventos"},
+            )
+            fig_groups.update_layout(height=300, margin={"t": 40, "b": 0, "l": 0, "r": 0})
+            st.plotly_chart(fig_groups, use_container_width=True)
+
+    with col_right2:
+        top_munis = (
+            geo_events[geo_events["municipality"] != "Desconocido"]
+            .groupby("municipality")
+            .size()
+            .reset_index(name="eventos")
+            .sort_values("eventos", ascending=True)
+            .tail(8)
+        )
+        if not top_munis.empty:
+            fig_munis = px.bar(
+                top_munis,
+                x="eventos", y="municipality", orientation="h",
+                title="Top municipios (geolocalizados)",
+                labels={"municipality": "Municipio", "eventos": "Eventos"},
+            )
+            fig_munis.update_layout(height=300, margin={"t": 40, "b": 0, "l": 0, "r": 0})
+            st.plotly_chart(fig_munis, use_container_width=True)
 
 
 # ---------------------------------------------------------------------------
@@ -445,24 +475,27 @@ def main() -> None:
             _reprocess_unknown_states()
             st.rerun()
 
+        if st.button("🔀 Re-cluster events", use_container_width=True):
+            _recluster_events()
+            st.rerun()
+
         st.divider()
         st.subheader("Filters")
 
+        # Load raw articles (for article table + filter population)
         df_raw = load()
+        events_raw = load_events()
 
-        if df_raw.empty:
+        if df_raw.empty or events_raw.empty:
             st.info("No data yet. Click Refresh to fetch articles.")
             return
 
-        # Apply group name normalisation at display time
-        df_all = _apply_group_normalization(df_raw)
+        articles_df = _apply_group_normalization(df_raw)
+        events_df = _prep_events(events_raw)
 
-        # Date filter
-        df_all["published_date"] = pd.to_datetime(
-            df_all["published_date"], errors="coerce", utc=True
-        )
-        min_date = df_all["published_date"].min()
-        max_date = df_all["published_date"].max()
+        # Date filter — based on event first_seen
+        min_date = events_df["first_seen"].min()
+        max_date = events_df["first_seen"].max()
 
         if pd.isna(min_date):
             min_date = datetime.now(timezone.utc) - timedelta(days=config.LOOKBACK_DAYS)
@@ -476,67 +509,67 @@ def main() -> None:
             max_value=max_date.date(),
         )
 
-        # Group filter (uses normalised names)
-        all_groups = sorted(df_all["group"].dropna().unique().tolist())
-        selected_groups = st.multiselect(
-            "Criminal groups",
-            options=all_groups,
-            default=all_groups,
-        )
+        # Group filter — from events
+        all_groups = sorted(events_df["group"].dropna().unique().tolist())
+        selected_groups = st.multiselect("Criminal groups", options=all_groups, default=all_groups)
 
-        # Crime type filter
-        all_crimes = sorted(df_all["crime_type"].dropna().unique().tolist())
-        selected_crimes = st.multiselect(
-            "Crime type",
-            options=all_crimes,
-            default=all_crimes,
-        )
+        # Crime type filter — from events
+        all_crimes = sorted(events_df["crime_type"].dropna().unique().tolist())
+        selected_crimes = st.multiselect("Crime type", options=all_crimes, default=all_crimes)
 
         st.divider()
-        st.caption(f"Total articles in cache: **{len(df_all)}**")
+        st.caption(
+            f"Articles in cache: **{len(df_raw)}**  \n"
+            f"Events: **{len(events_raw)}**"
+        )
 
-    # ---- Apply filters ----
-    df = df_all.copy()
+    # ---- Apply filters to events ----
+    ev = events_df.copy()
 
     if len(date_range) == 2:
         start, end = date_range
-        df = df[
-            (df["published_date"].dt.date >= start)
-            & (df["published_date"].dt.date <= end)
+        ev = ev[
+            (ev["first_seen"].dt.date >= start)
+            & (ev["first_seen"].dt.date <= end)
         ]
 
     if selected_groups:
-        df = df[df["group"].isin(selected_groups)]
+        ev = ev[ev["group"].isin(selected_groups)]
     if selected_crimes:
-        df = df[df["crime_type"].isin(selected_crimes)]
+        ev = ev[ev["crime_type"].isin(selected_crimes)]
 
-    if df.empty:
-        st.warning("No articles match the current filters.")
+    # Also filter articles to match same event_ids (for article table)
+    active_event_ids = set(ev["event_id"].dropna().tolist())
+    art = articles_df.copy()
+    if "event_id" in art.columns and active_event_ids:
+        art = art[art["event_id"].isin(active_event_ids)]
+
+    if ev.empty:
+        st.warning("No events match the current filters.")
         return
 
     # ---- Top metrics ----
-    _state_norm = df["state"].apply(_normalize_state)
-    n_internacional = int((_state_norm == "Internacional").sum())
-    n_desconocido = int((_state_norm == "Desconocido").sum())
-    n_geo = len(df) - n_internacional - n_desconocido
+    n_geo = int((~ev["state"].isin({"Desconocido", "Internacional"})).sum())
+    n_intl = int((ev["state"] == "Internacional").sum())
+    n_arts = int(ev["article_count"].sum())
 
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Artículos", len(df))
-    m2.metric("Geolocalizados", n_geo)
-    m3.metric("Internacional", n_internacional)
-    m4.metric(
+    m1.metric("Eventos", len(ev))
+    m2.metric("Artículos totales", n_arts)
+    m3.metric("Geolocalizados", n_geo)
+    m4.metric("Internacional", n_intl)
+    m5.metric(
         "Grupos identificados",
-        df[df["group"] != "Desconocido"]["group"].nunique(),
+        ev[ev["group"] != "Desconocido"]["group"].nunique(),
     )
-    m5.metric("Tipos de crimen", df["crime_type"].nunique())
 
     st.divider()
 
     # ---- Main choropleth ----
-    st.subheader("Mapa de incidentes")
+    st.subheader("Mapa de eventos")
     st.caption("Haz clic en un estado para ver su detalle.")
 
-    fig_main = _build_map(df)
+    fig_main = _build_map(ev)
     map_event = st.plotly_chart(
         fig_main,
         use_container_width=True,
@@ -550,31 +583,32 @@ def main() -> None:
     selected_state: str | None = None
     if map_event and map_event.get("selection") and map_event["selection"].get("points"):
         point = map_event["selection"]["points"][0]
-        # Plotly choropleth stores the location name in 'location'
         selected_state = point.get("location") or point.get("hovertext")
 
     if selected_state:
         with st.container(border=True):
-            _render_state_detail(df, selected_state)
+            _render_state_detail(ev, art, selected_state)
     else:
         st.info("Haz clic en un estado del mapa para ver el detalle.", icon="👆")
 
     st.divider()
 
     # ---- Aggregate trend charts ----
-    _render_trend_charts(df)
+    _render_trend_charts(ev)
 
     st.divider()
 
     # ---- Article table ----
     st.subheader("Artículos")
-    display_cols = [
+    art_display_cols = [
         "published_date", "title", "state", "municipality",
         "group", "crime_type", "confidence", "source",
     ]
-    table_df = df[[c for c in display_cols if c in df.columns]].copy()
-    table_df["published_date"] = table_df["published_date"].dt.strftime("%Y-%m-%d")
-    table_df["confidence"] = pd.to_numeric(table_df["confidence"], errors="coerce").round(2)
+    art["published_date"] = pd.to_datetime(
+        art["published_date"], errors="coerce", utc=True
+    ).dt.strftime("%Y-%m-%d")
+    art["confidence"] = pd.to_numeric(art["confidence"], errors="coerce").round(2)
+    table_df = art[[c for c in art_display_cols if c in art.columns]]
     st.dataframe(
         table_df.sort_values("published_date", ascending=False),
         use_container_width=True,
