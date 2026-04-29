@@ -115,6 +115,31 @@ def _run_pipeline() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Article card renderer
+# ---------------------------------------------------------------------------
+
+def _render_article_card(row: pd.Series) -> None:
+    """Render a single article's metadata below its expander label."""
+    url = str(row.get("url", "") or "")
+    source = str(row.get("source", "—") or "—")
+    pub_date = str(row.get("published_date", "—") or "—")
+    state = str(row.get("state", "—") or "—")
+    municipality = str(row.get("municipality", "—") or "—")
+    group = str(row.get("group", "—") or "—")
+    crime_type = str(row.get("crime_type", "—") or "—")
+    conf = float(pd.to_numeric(row.get("confidence", 0), errors="coerce") or 0.0)
+
+    muni_part = f" · {municipality}" if municipality not in {"—", "Desconocido"} else ""
+    st.caption(
+        f"📅 {pub_date} &nbsp;·&nbsp; 📰 {source} &nbsp;·&nbsp; "
+        f"📍 {state}{muni_part} &nbsp;·&nbsp; "
+        f"🔴 {group} &nbsp;·&nbsp; ⚖️ {crime_type} &nbsp;·&nbsp; conf. {conf:.2f}"
+    )
+    if url:
+        st.markdown(f"[Ver artículo original ↗]({url})")
+
+
+# ---------------------------------------------------------------------------
 # Map builder  (driven by events)
 # ---------------------------------------------------------------------------
 
@@ -297,28 +322,23 @@ def _render_state_detail(
             ec3.metric("Confianza", f"{float(ev['confidence']):.2f}")
 
             if not state_articles.empty and "event_id" in state_articles.columns:
-                ev_articles = state_articles[state_articles["event_id"] == ev["event_id"]]
+                ev_articles = state_articles[
+                    state_articles["event_id"] == ev["event_id"]
+                ].copy()
                 if not ev_articles.empty:
-                    art_display = ev_articles[
-                        ["published_date", "title", "source", "confidence"]
-                    ].copy()
-                    art_display["published_date"] = pd.to_datetime(
-                        art_display["published_date"], errors="coerce", utc=True
+                    ev_articles["published_date"] = pd.to_datetime(
+                        ev_articles["published_date"], errors="coerce", utc=True
                     ).dt.strftime("%Y-%m-%d")
-                    art_display["confidence"] = pd.to_numeric(
-                        art_display["confidence"], errors="coerce"
-                    ).round(2)
-                    st.dataframe(
-                        art_display.sort_values("published_date", ascending=False),
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config={
-                            "title": st.column_config.TextColumn("Título", width="large"),
-                            "confidence": st.column_config.ProgressColumn(
-                                "Conf.", min_value=0, max_value=1
-                            ),
-                        },
+                    ev_articles_sorted = ev_articles.sort_values(
+                        "published_date", ascending=False
                     )
+                    for _, art_row in ev_articles_sorted.iterrows():
+                        art_title = str(art_row.get("title", "") or "Sin título")
+                        art_source = str(art_row.get("source", "—") or "—")
+                        art_date = str(art_row.get("published_date", "—") or "—")
+                        lbl = f"{art_title[:100]}{'…' if len(art_title) > 100 else ''}"
+                        with st.expander(lbl):
+                            _render_article_card(art_row)
 
 
 # ---------------------------------------------------------------------------
@@ -491,6 +511,14 @@ def main() -> None:
     if selected_crimes:
         ev = ev[ev["crime_type"].isin(selected_crimes)]
 
+    # Unassociated articles: not linked to any event (across ALL articles, unfiltered)
+    if "event_id" in articles_df.columns:
+        unassociated = articles_df[
+            articles_df["event_id"].isna() | (articles_df["event_id"] == "")
+        ].copy()
+    else:
+        unassociated = pd.DataFrame()
+
     # Also filter articles to match same event_ids (for article table)
     active_event_ids = set(ev["event_id"].dropna().tolist())
     art = articles_df.copy()
@@ -505,8 +533,9 @@ def main() -> None:
     n_geo = int((~ev["state"].isin({"Desconocido", "Internacional"})).sum())
     n_intl = int((ev["state"] == "Internacional").sum())
     n_arts = int(ev["article_count"].sum())
+    n_unassoc = len(unassociated)
 
-    m1, m2, m3, m4, m5 = st.columns(5)
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Eventos", len(ev))
     m2.metric("Artículos totales", n_arts)
     m3.metric("Geolocalizados", n_geo)
@@ -515,6 +544,7 @@ def main() -> None:
         "Grupos identificados",
         ev[ev["group"] != "Desconocido"]["group"].nunique(),
     )
+    m6.metric("Sin evento", n_unassoc)
 
     st.divider()
 
@@ -551,28 +581,77 @@ def main() -> None:
 
     st.divider()
 
-    # ---- Article table ----
-    st.subheader("Artículos")
-    art_display_cols = [
-        "published_date", "title", "state", "municipality",
-        "group", "crime_type", "confidence", "source",
-    ]
-    art["published_date"] = pd.to_datetime(
-        art["published_date"], errors="coerce", utc=True
-    ).dt.strftime("%Y-%m-%d")
-    art["confidence"] = pd.to_numeric(art["confidence"], errors="coerce").round(2)
-    table_df = art[[c for c in art_display_cols if c in art.columns]]
-    st.dataframe(
-        table_df.sort_values("published_date", ascending=False),
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "title": st.column_config.TextColumn("Título", width="large"),
-            "confidence": st.column_config.ProgressColumn(
-                "Confidence", min_value=0, max_value=1
-            ),
-        },
+    # ---- Article list (linked to events) ----
+    st.subheader(f"Artículos ({len(art)})")
+    if art.empty:
+        st.info("No hay artículos vinculados a eventos en el período seleccionado.")
+    else:
+        art_sorted = art.copy()
+        art_sorted["published_date"] = pd.to_datetime(
+            art_sorted["published_date"], errors="coerce", utc=True
+        ).dt.strftime("%Y-%m-%d")
+        art_sorted = art_sorted.sort_values("published_date", ascending=False)
+        _MAX_ARTICLES_SHOWN = 100
+        shown = art_sorted.head(_MAX_ARTICLES_SHOWN)
+        for _, row in shown.iterrows():
+            art_title = str(row.get("title", "") or "Sin título")
+            art_source = str(row.get("source", "—") or "—")
+            art_date = str(row.get("published_date", "—") or "—")
+            lbl = f"{art_title[:100]}{'…' if len(art_title) > 100 else ''}"
+            with st.expander(lbl):
+                _render_article_card(row)
+        if len(art_sorted) > _MAX_ARTICLES_SHOWN:
+            st.caption(
+                f"Mostrando {_MAX_ARTICLES_SHOWN} de {len(art_sorted)} artículos. "
+                "Aplica un filtro para reducir la lista."
+            )
+
+    st.divider()
+
+    # ---- Unassociated articles ----
+    st.subheader(f"Artículos sin evento ({n_unassoc})")
+    st.caption(
+        "Artículos capturados que el motor de clustering no pudo asociar a ningún evento."
     )
+    if unassociated.empty:
+        st.success("Todos los artículos están vinculados a un evento.")
+    else:
+        unassoc_sorted = unassociated.copy()
+        unassoc_sorted["published_date"] = pd.to_datetime(
+            unassoc_sorted["published_date"], errors="coerce", utc=True
+        ).dt.strftime("%Y-%m-%d")
+        unassoc_sorted = unassoc_sorted.sort_values("published_date", ascending=False)
+
+        # Quick breakdown stats
+        uc1, uc2, uc3 = st.columns(3)
+        top_unassoc_state = (
+            unassoc_sorted[~unassoc_sorted["state"].isin({"Desconocido", "Internacional"})]
+            ["state"].value_counts()
+        )
+        top_unassoc_group = (
+            unassoc_sorted[unassoc_sorted["group"] != "Desconocido"]
+            ["group"].value_counts()
+        )
+        uc1.metric(
+            "Estado más frecuente",
+            top_unassoc_state.index[0] if not top_unassoc_state.empty else "—",
+        )
+        uc2.metric(
+            "Grupo más frecuente",
+            top_unassoc_group.index[0] if not top_unassoc_group.empty else "—",
+        )
+        uc3.metric(
+            "Sin geolocalización",
+            int((unassoc_sorted["state"] == "Desconocido").sum()),
+        )
+
+        for _, row in unassoc_sorted.iterrows():
+            art_title = str(row.get("title", "") or "Sin título")
+            art_source = str(row.get("source", "—") or "—")
+            art_date = str(row.get("published_date", "—") or "—")
+            lbl = f"{art_title[:100]}{'…' if len(art_title) > 100 else ''}"
+            with st.expander(lbl):
+                _render_article_card(row)
 
 
 if __name__ == "__main__":
