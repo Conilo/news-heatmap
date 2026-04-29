@@ -69,11 +69,9 @@ state:
     Cuernavaca, Cuautla                              → Morelos
     Chilpancingo, Acapulco, Iguala                   → Guerrero
 
-  Also infer from cartel territorial context when no city is mentioned:
-    CJNG operations, CJNG arrests, CJNG leader news → default Jalisco if no other clue
-    Cártel de Sinaloa leadership, Chapitos           → default Sinaloa if no other clue
-    Cártel del Golfo, CDG                            → default Tamaulipas if no other clue
-    Los Zetas, Cártel del Noreste                    → default Tamaulipas if no other clue
+  IMPORTANT: Do NOT infer state from the cartel's home territory alone.
+  A CJNG story with no explicit location is "Desconocido", NOT "Jalisco".
+  Cartels operate across many states; only use explicit geographic clues.
 
 municipality:
   City or municipality name in Spanish, or "Desconocido".
@@ -106,7 +104,7 @@ Input:
   Title: Detienen en México a narco líder del Cártel Jalisco Nueva Generación
   Description: Detienen en México a narco líder del Cártel Jalisco Nueva Generación
 Output:
-{"state": "Jalisco", "municipality": "Desconocido", "group": "CJNG", "crime_type": "otro", "confidence": 0.72}
+{"state": "Desconocido", "municipality": "Desconocido", "group": "CJNG", "crime_type": "otro", "confidence": 0.70}
 """
 
 _FALLBACK: dict[str, Any] = {

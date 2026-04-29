@@ -57,7 +57,7 @@ GEOJSON_PATH = "assets/mexico.geojson"
 # ---------------------------------------------------------------------------
 # Event clustering
 # ---------------------------------------------------------------------------
-CLUSTER_WINDOW_DAYS = 3   # articles within this many days share a date bucket
+CLUSTER_WINDOW_DAYS = 5   # articles within this many days share a date bucket
 
 EVENTS_CSV_COLUMNS = [
     "event_id",
@@ -148,6 +148,7 @@ GROUP_ALIASES: dict[str, str] = {
     "cártel de jalisco nueva generación": "CJNG",
     "el mencho": "CJNG",              # Nemesio Oseguera Cervantes, CJNG leader
     "nemesio oseguera": "CJNG",
+    "cng": "CJNG",                    # common SLM typo for CJNG
     # Cártel de Sinaloa
     "cartel de sinaloa": "Cártel de Sinaloa",
     "cártel de sinaloa": "Cártel de Sinaloa",

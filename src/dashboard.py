@@ -15,7 +15,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import config
-from store import append_new, get_processed_urls, load, load_events, update_rows
+from store import append_new, get_processed_urls, load, load_events
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -111,45 +111,6 @@ def _run_pipeline() -> None:
         recompute_events(use_slm=False)
 
     st.success(f"Added {len(extracted)} new articles and updated events.")
-    st.cache_data.clear()
-
-
-def _reprocess_unknown_states() -> None:
-    """Re-run SLM extraction on cached articles with state == 'Desconocido'."""
-    from cluster import recompute_events
-    from extract import extract_article
-
-    df = load()
-    unknown = df[df["state"] == "Desconocido"]
-
-    if unknown.empty:
-        st.info("No hay artículos con estado Desconocido para reprocesar.")
-        return
-
-    records = unknown.to_dict("records")
-    progress = st.progress(0, text=f"Re-procesando {len(records)} artículos...")
-    updated = []
-    for i, row in enumerate(records):
-        updated.append(extract_article(row))
-        progress.progress((i + 1) / len(records), text=f"Re-procesando {i + 1}/{len(records)}")
-
-    progress.empty()
-    update_rows(updated)
-    resolved = sum(1 for r in updated if r.get("state", "Desconocido") != "Desconocido")
-    st.success(f"Re-procesados {len(updated)} artículos — {resolved} ahora tienen estado.")
-
-    with st.spinner("Re-clustering events..."):
-        recompute_events(use_slm=False)
-    st.cache_data.clear()
-
-
-def _recluster_events() -> None:
-    """Full re-clustering of all articles into events."""
-    from cluster import recompute_events
-
-    with st.spinner("Re-clustering all articles into events..."):
-        _, events = recompute_events(use_slm=False)
-    st.success(f"Re-clustered into {len(events)} events.")
     st.cache_data.clear()
 
 
@@ -469,14 +430,6 @@ def main() -> None:
 
         if st.button("🔄 Refresh (fetch + extract)", use_container_width=True):
             _run_pipeline()
-            st.rerun()
-
-        if st.button("🔁 Re-process unknown states", use_container_width=True):
-            _reprocess_unknown_states()
-            st.rerun()
-
-        if st.button("🔀 Re-cluster events", use_container_width=True):
-            _recluster_events()
             st.rerun()
 
         st.divider()

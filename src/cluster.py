@@ -53,11 +53,17 @@ def _normalize_state(state: str) -> str:
 
 
 def _cluster_key(row: pd.Series) -> tuple:
-    """Return the Stage-1 grouping key for a single article row."""
+    """
+    Return the Stage-1 grouping key for a single article row.
+
+    crime_type is intentionally excluded: the SLM often labels the same
+    incident as "narcotráfico", "homicidio", "enfrentamiento", or "otro"
+    depending on headline framing, which would split one real event into
+    multiple clusters.
+    """
     return (
         _normalize_state(str(row.get("state", ""))),
         normalize_group(str(row.get("group", ""))),
-        str(row.get("crime_type", "otro")),
         _date_bucket(row.get("published_date")),
     )
 
@@ -107,6 +113,156 @@ def _build_event_row(event_id: str, group_df: pd.DataFrame) -> dict:
         "confidence": _compute_confidence(group_df),
         "canonical_title": canonical_title,
     }
+
+
+# ---------------------------------------------------------------------------
+# Stage 1b — Desconocido-absorb merge
+# ---------------------------------------------------------------------------
+
+def _absorb_desconocido(key_to_event: dict[tuple, str]) -> dict[tuple, str]:
+    """
+    Merge Desconocido-state clusters into state-specific clusters when they
+    share the same (group, date_bucket).
+
+    Example: (Desconocido, CJNG, bucket_5) merges into (Nayarit, CJNG, bucket_5)
+    because a Desconocido article is likely the same event, just without an
+    explicit state mention.
+
+    When multiple specific states exist for the same (group, bucket), we keep
+    them separate (they might genuinely be different events) and only absorb
+    the Desconocido cluster.
+    """
+    # Build reverse map: (group, bucket) → list of (state, event_id)
+    from collections import defaultdict
+    group_bucket: dict[tuple, list[tuple[str, str]]] = defaultdict(list)
+    for (state, group, bucket), eid in key_to_event.items():
+        group_bucket[(group, bucket)].append((state, eid))
+
+    merge_map: dict[str, str] = {}  # old_event_id → canonical_event_id
+
+    # Build article counts per event_id for "largest cluster wins"
+    eid_counts: dict[str, int] = {}
+    for eid in key_to_event.values():
+        eid_counts[eid] = eid_counts.get(eid, 0) + 1
+
+    for (group, bucket), entries in group_bucket.items():
+        states = {s for s, _ in entries}
+        if "Desconocido" not in states:
+            continue
+        specific = [s for s in states if s not in _NON_GEO]
+        if not specific:
+            continue
+        # Find the specific-state event with the most articles to absorb into
+        target_eid = max(
+            (eid for s, eid in entries if s in specific),
+            key=lambda e: eid_counts.get(e, 0),
+        )
+        for s, eid in entries:
+            if s == "Desconocido" and eid != target_eid:
+                merge_map[eid] = target_eid
+
+    if not merge_map:
+        return key_to_event
+
+    def _resolve(eid: str) -> str:
+        seen: set[str] = set()
+        while eid in merge_map and eid not in seen:
+            seen.add(eid)
+            eid = merge_map[eid]
+        return eid
+
+    return {k: _resolve(v) for k, v in key_to_event.items()}
+
+
+# ---------------------------------------------------------------------------
+# Stage 1c — Title-similarity merge for cross-state same-group clusters
+# ---------------------------------------------------------------------------
+
+def _jaccard_words(a: str, b: str) -> float:
+    """Word-level Jaccard similarity between two strings."""
+    sw = {"de", "del", "la", "el", "en", "al", "los", "las", "y", "a", "que",
+          "un", "una", "con", "por", "su", "se", "es", "fue"}
+    wa = {w.lower() for w in a.split() if len(w) > 2 and w.lower() not in sw}
+    wb = {w.lower() for w in b.split() if len(w) > 2 and w.lower() not in sw}
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / len(wa | wb)
+
+
+_TITLE_JACCARD_THRESHOLD = 0.45
+
+
+def _title_similarity_merge(
+    articles: pd.DataFrame,
+    key_to_event: dict[tuple, str],
+) -> dict[tuple, str]:
+    """
+    For events that share the same (group, date_bucket) but differ on state,
+    compute pairwise title Jaccard similarity between their representative
+    titles.  If similarity > threshold, merge the smaller cluster into the
+    larger one (more articles wins).
+    """
+    from collections import defaultdict
+
+    # Map event_id → articles belonging to it
+    articles = articles.copy()
+    articles["_key"] = articles.apply(_cluster_key, axis=1)
+    articles["_event_id"] = articles["_key"].map(key_to_event)
+    articles["_group"] = articles["group"].apply(normalize_group)
+    articles["_bucket"] = articles["published_date"].apply(_date_bucket)
+
+    # Representative title per event: first (highest-confidence) article
+    rep_title: dict[str, str] = {}
+    event_size: dict[str, int] = {}
+    for eid, grp in articles.groupby("_event_id"):
+        confs = pd.to_numeric(grp["confidence"], errors="coerce")
+        best = confs.idxmax() if not confs.dropna().empty else grp.index[0]
+        rep_title[str(eid)] = str(grp.loc[best, "title"])
+        event_size[str(eid)] = len(grp)
+
+    merge_map: dict[str, str] = {}
+
+    group_bucket_events: dict[tuple, list[str]] = defaultdict(list)
+    for (state, group, bucket), eid in key_to_event.items():
+        if state not in _NON_GEO:
+            group_bucket_events[(group, bucket)].append(eid)
+
+    for (group, bucket), eids in group_bucket_events.items():
+        unique_eids = list(set(eids))
+        if len(unique_eids) <= 1:
+            continue
+        for i, eid_a in enumerate(unique_eids):
+            for eid_b in unique_eids[i + 1:]:
+                canon_a = merge_map.get(eid_a, eid_a)
+                canon_b = merge_map.get(eid_b, eid_b)
+                if canon_a == canon_b:
+                    continue
+                sim = _jaccard_words(
+                    rep_title.get(eid_a, ""),
+                    rep_title.get(eid_b, ""),
+                )
+                if sim >= _TITLE_JACCARD_THRESHOLD:
+                    # Keep the event with more articles
+                    keep = canon_a if event_size.get(canon_a, 0) >= event_size.get(canon_b, 0) else canon_b
+                    drop = canon_b if keep == canon_a else canon_a
+                    merge_map[drop] = keep
+                    print(
+                        f"[cluster] Title-sim merge ({sim:.2f}): "
+                        f"{rep_title.get(drop,'')[:50]} → "
+                        f"{rep_title.get(keep,'')[:50]}"
+                    )
+
+    if not merge_map:
+        return key_to_event
+
+    def _resolve(eid: str) -> str:
+        seen: set[str] = set()
+        while eid in merge_map and eid not in seen:
+            seen.add(eid)
+            eid = merge_map[eid]
+        return eid
+
+    return {k: _resolve(v) for k, v in key_to_event.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -232,14 +388,19 @@ def cluster_articles(
     if "event_id" not in articles.columns:
         articles["event_id"] = ""
 
-    # Stage 1: assign a UUID to each unique (state, group, crime_type, date_bucket)
+    # Stage 1: assign a UUID to each unique (state, group, date_bucket)
     key_to_event: dict[tuple, str] = {}
     for idx, row in articles.iterrows():
         key = _cluster_key(row)
         if key not in key_to_event:
-            # Re-use existing event_id if the article already had one for this key
             existing = articles.loc[idx, "event_id"]
             key_to_event[key] = existing if existing else str(uuid.uuid4())
+
+    # Stage 1b: absorb Desconocido-state clusters into unambiguous state clusters
+    key_to_event = _absorb_desconocido(key_to_event)
+
+    # Stage 1c: title-similarity merge for cross-state clusters (same group+bucket)
+    key_to_event = _title_similarity_merge(articles, key_to_event)
 
     # Stage 2 (optional SLM disambiguation)
     if use_slm:
