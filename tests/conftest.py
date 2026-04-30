@@ -27,6 +27,9 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers", "live: hits the live Google News API (skipped unless --live)"
     )
+    config.addinivalue_line(
+        "markers", "flaky: retry on failure (handled by pytest-rerunfailures)"
+    )
 
 
 def pytest_collection_modifyitems(

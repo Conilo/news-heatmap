@@ -244,6 +244,7 @@ def _is_mexico_relevant(article: dict) -> bool:
 
 
 @pytest.mark.live
+@pytest.mark.flaky(reruns=3, reruns_delay=5)
 def test_live_results_are_relevant():
     """At least 95% of fetched articles must be crime-relevant AND Mexico-relevant."""
     articles = fetch_articles()
