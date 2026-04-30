@@ -85,7 +85,11 @@ def _run_pipeline() -> None:
             max_results=config.MAX_ARTICLES,
         )
     if not articles:
-        st.warning("No articles fetched. Check your internet connection or try again.")
+        st.warning(
+            "No articles with downloadable full text were found. "
+            "Check your connection, publisher blocks (403), or try increasing "
+            "`GNEWS_RSS_MAX_ITEMS` in config.py if the feed ran out of candidates."
+        )
         return
 
     already_processed = get_processed_urls()

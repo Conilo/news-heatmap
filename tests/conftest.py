@@ -12,6 +12,10 @@ import pytest
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
+# Match `streamlit run src/dashboard.py`: `src/*.py` use `from store import …`
+_SRC_DIR = os.path.join(_PROJECT_ROOT, "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

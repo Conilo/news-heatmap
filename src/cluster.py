@@ -35,6 +35,15 @@ _EPOCH = pd.Timestamp("1970-01-01", tz="UTC")
 _NON_GEO = {"Desconocido", "Internacional"}
 
 
+def _state_group_bucket(key: tuple) -> tuple:
+    """First three entries of a Stage-1 key: (state, group, date_bucket).
+
+    Keys are usually 3-tuples; unextracted articles use a 4-tuple with a URL
+    suffix so they do not collapse into one cluster.
+    """
+    return key[0], key[1], key[2]
+
+
 def _date_bucket(date_val: Any) -> int:
     """Convert a date/timestamp to a CLUSTER_WINDOW_DAYS bucket integer."""
     try:
@@ -60,12 +69,26 @@ def _cluster_key(row: pd.Series) -> tuple:
     incident as "narcotráfico", "homicidio", "enfrentamiento", or "otro"
     depending on headline framing, which would split one real event into
     multiple clusters.
+
+    Rows with no body and only SLM fallbacks (Desconocido / confidence 0)
+    get a per-URL suffix so unrelated stories are not merged into one event.
     """
-    return (
-        _normalize_state(str(row.get("state", ""))),
-        normalize_group(str(row.get("group", ""))),
-        _date_bucket(row.get("published_date")),
-    )
+    state = _normalize_state(str(row.get("state", "")))
+    group = normalize_group(str(row.get("group", "")))
+    bucket = _date_bucket(row.get("published_date"))
+    base_key = (state, group, bucket)
+
+    try:
+        conf = float(row.get("confidence"))
+    except (TypeError, ValueError):
+        conf = 0.0
+    body = str(row.get("body") or "").strip()
+    desconocido_group = normalize_group("Desconocido")
+    if conf <= 0.0 and state == "Desconocido" and group == desconocido_group and not body:
+        u = str(row.get("url", "") or row.get("title", "") or "")
+        return (*base_key, u)
+
+    return base_key
 
 
 def _most_common(series: pd.Series, exclude: set[str] | None = None) -> str:
@@ -135,7 +158,8 @@ def _absorb_desconocido(key_to_event: dict[tuple, str]) -> dict[tuple, str]:
     # Build reverse map: (group, bucket) → list of (state, event_id)
     from collections import defaultdict
     group_bucket: dict[tuple, list[tuple[str, str]]] = defaultdict(list)
-    for (state, group, bucket), eid in key_to_event.items():
+    for key, eid in key_to_event.items():
+        state, group, bucket = _state_group_bucket(key)
         group_bucket[(group, bucket)].append((state, eid))
 
     merge_map: dict[str, str] = {}  # old_event_id → canonical_event_id
@@ -223,7 +247,8 @@ def _title_similarity_merge(
     merge_map: dict[str, str] = {}
 
     group_bucket_events: dict[tuple, list[str]] = defaultdict(list)
-    for (state, group, bucket), eid in key_to_event.items():
+    for key, eid in key_to_event.items():
+        state, group, bucket = _state_group_bucket(key)
         if state not in _NON_GEO:
             group_bucket_events[(group, bucket)].append(eid)
 

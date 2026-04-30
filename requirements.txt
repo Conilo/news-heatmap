@@ -1,4 +1,10 @@
 gnews==0.3.7
+newspaper3k==0.2.8
+# Required for newspaper3k with lxml 5.2+: `import newspaper` fails without this
+# (gnews then misleadingly prints "install newspaper3k").
+lxml-html-clean>=0.4.0
+# Resolve news.google.com/rss/articles/... wrappers to publisher URLs (HEAD no longer works).
+googlenewsdecoder>=0.1.7
 ollama==0.6.1
 streamlit==1.56.0
 plotly==6.7.0

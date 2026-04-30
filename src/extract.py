@@ -21,7 +21,7 @@ import config
 
 SYSTEM_PROMPT = """\
 You are a structured data extractor specialized in Mexican crime and cartel news.
-Given a news article title and description, extract the following fields as valid JSON.
+Given a news article title, a short Google News description snippet, and the article body text, extract the following fields as valid JSON.
 Respond ONLY with valid JSON — no markdown fences, no explanation, nothing else.
 
 === FIELDS ===
@@ -170,31 +170,37 @@ def _validate_fields(data: dict[str, Any]) -> dict[str, Any]:
 
 def extract_article(article: dict[str, Any]) -> dict[str, Any]:
     """
-    Run SLM extraction on a single article.
+    Run SLM extraction on a single article when ``article["body"]`` is non-empty.
 
     Merges the returned structured fields into the article dict and adds
-    a `processed_at` timestamp.  Returns the enriched article dict.
+    a `processed_at` timestamp. If there is no body text, skips the SLM and
+    uses fallback structured values.
     """
-    user_text = (
-        f"Title: {article.get('title', '')}\n"
-        f"Description: {article.get('description', '')}"
-    )
+    body = (article.get("body") or "").strip()
 
     extracted: dict[str, Any] = dict(_FALLBACK)
-    try:
-        response = ollama.chat(
-            model=config.MODEL_NAME,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_text},
-            ],
-            options={"temperature": 0.0},
+    if body:
+        user_text = (
+            f"Title: {article.get('title', '')}\n"
+            f"Description: {article.get('description', '')}\n"
+            f"Article: {body}"
         )
-        raw_text = response["message"]["content"]
-        parsed = _parse_json_response(raw_text)
-        extracted = _validate_fields(parsed)
-    except Exception as exc:
-        print(f"[extract] Warning: SLM call failed for '{article.get('title', '')}' — {exc}")
+        try:
+            response = ollama.chat(
+                model=config.MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_text},
+                ],
+                options={"temperature": 0.0},
+            )
+            raw_text = response["message"]["content"]
+            parsed = _parse_json_response(raw_text)
+            extracted = _validate_fields(parsed)
+        except Exception as exc:
+            print(f"[extract] Warning: SLM call failed for '{article.get('title', '')}' — {exc}")
+    else:
+        print(f"[extract] Skipping SLM (no body): {article.get('title', '')[:60]}")
 
     return {
         **article,
@@ -230,6 +236,7 @@ if __name__ == "__main__":
         "url": "https://example.com/1",
         "title": "Cártel de Sinaloa ejecuta a 3 personas en Culiacán",
         "description": "Sicarios del Cártel de Sinaloa abrieron fuego contra un grupo de personas en el centro de Culiacán, Sinaloa, dejando tres muertos.",
+        "body": "En el centro de Culiacán, testigos reportaron disparos. Tres personas murieron. Las autoridades atribuyen el hecho al Cártel de Sinaloa.",
         "published_date": "2024-01-01",
         "source": "El Universal",
     }

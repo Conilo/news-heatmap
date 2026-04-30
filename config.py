@@ -9,8 +9,24 @@ OLLAMA_HOST = "http://localhost:11434"
 # ---------------------------------------------------------------------------
 # News fetching
 # ---------------------------------------------------------------------------
-LOOKBACK_DAYS = 7
-MAX_ARTICLES = 100   # cap per run to keep SLM calls manageable
+LOOKBACK_DAYS = 14
+MAX_ARTICLES = 30   # target number of articles **with** full text per run (SLM + storage)
+
+# Google News RSS items to scan (must be >= MAX_ARTICLES). Larger helps when many hits lack a downloadable body.
+GNEWS_RSS_MAX_ITEMS = max(MAX_ARTICLES * 4, 100)
+
+# Truncate downloaded article text for CSV storage and SLM context (newspaper3k).
+ARTICLE_BODY_MAX_CHARS_SLM = 8000
+
+# Delay between Google News URL decodes (googlenewsdecoder) to reduce rate limits; 0 = none.
+GOOGLE_NEWS_DECODE_INTERVAL_SEC = 0.0
+
+# newspaper3k HTTP settings (some publishers 403 bare bots; this is not a paywall workaround).
+ARTICLE_FETCH_TIMEOUT_SEC = 25
+ARTICLE_FETCH_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
 
 # Terms used to build the Google News fetch query. Keep this list small
 # (~8-10 broad terms): long OR-chains dilute Google's relevance ranking.
@@ -255,6 +271,7 @@ CSV_COLUMNS = [
     "url",
     "title",
     "description",
+    "body",
     "published_date",
     "source",
     "state",

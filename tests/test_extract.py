@@ -104,6 +104,7 @@ def _sample_article() -> dict:
         "url": "https://example.com/1",
         "title": "Cártel de Sinaloa ejecuta a 3 personas en Culiacán",
         "description": "Sicarios abrieron fuego en Culiacán, Sinaloa.",
+        "body": "Reportes indican enfrentamiento en el centro de Culiacán con tres víctimas.",
         "published_date": "2024-01-01",
         "source": "El Universal",
     }
@@ -185,6 +186,40 @@ def test_extract_article_falls_back_on_ollama_exception(monkeypatch, capsys):
     assert "[extract] Warning" in out
 
 
+def test_extract_article_skips_slm_when_body_empty(monkeypatch, capsys):
+    calls = []
+
+    def fake_chat(*args, **kwargs):
+        calls.append(1)
+        return _ollama_response("{}")
+
+    monkeypatch.setattr(extract.ollama, "chat", fake_chat)
+
+    article = {**_sample_article(), "body": ""}
+    result = extract.extract_article(article)
+
+    assert calls == []
+    assert result["state"] == "Desconocido"
+    assert result["confidence"] == 0.0
+    assert "Skipping SLM" in capsys.readouterr().out
+
+
+def test_extract_article_skips_slm_when_body_whitespace_only(monkeypatch):
+    calls = []
+
+    def fake_chat(*args, **kwargs):
+        calls.append(1)
+        return _ollama_response("{}")
+
+    monkeypatch.setattr(extract.ollama, "chat", fake_chat)
+
+    article = {**_sample_article(), "body": "  \n\t  "}
+    result = extract.extract_article(article)
+
+    assert calls == []
+    assert result["group"] == "Desconocido"
+
+
 # ---------------------------------------------------------------------------
 # Group D — extract_articles()
 # ---------------------------------------------------------------------------
@@ -204,9 +239,9 @@ def test_extract_articles_skips_urls_in_skip_set(monkeypatch):
     monkeypatch.setattr(extract.ollama, "chat", fake_chat)
 
     articles = [
-        {"url": "https://a.com", "title": "a", "description": "d-a"},
-        {"url": "https://b.com", "title": "b", "description": "d-b"},
-        {"url": "https://c.com", "title": "c", "description": "d-c"},
+        {"url": "https://a.com", "title": "a", "description": "d-a", "body": "body a"},
+        {"url": "https://b.com", "title": "b", "description": "d-b", "body": "body b"},
+        {"url": "https://c.com", "title": "c", "description": "d-c", "body": "body c"},
     ]
     skip = {"https://b.com"}
 
@@ -230,8 +265,8 @@ def test_extract_articles_defaults_skip_urls_to_empty_set(monkeypatch):
     monkeypatch.setattr(extract.ollama, "chat", fake_chat)
 
     articles = [
-        {"url": "https://a.com", "title": "a", "description": "d-a"},
-        {"url": "https://b.com", "title": "b", "description": "d-b"},
+        {"url": "https://a.com", "title": "a", "description": "d-a", "body": "x"},
+        {"url": "https://b.com", "title": "b", "description": "d-b", "body": "y"},
     ]
 
     results = extract.extract_articles(articles)

@@ -31,6 +31,7 @@ def _full_article(url: str, **overrides) -> dict:
         "url": url,
         "title": "t",
         "description": "d",
+        "body": "article body text",
         "published_date": "Mon, 28 Apr 2026 12:00:00 GMT",
         "source": "src",
         "state": "Sinaloa",
