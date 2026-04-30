@@ -33,7 +33,15 @@ def load() -> pd.DataFrame:
     if not os.path.exists(config.ARTICLES_CSV):
         return _empty_df()
     try:
-        df = pd.read_csv(config.ARTICLES_CSV, dtype=str)
+        # keep_default_na=False keeps empty cells as "" instead of NaN —
+        # downstream code does truthiness/string-equality checks (e.g. on
+        # event_id, municipality) and NaN propagation has bitten us before.
+        df = pd.read_csv(
+            config.ARTICLES_CSV,
+            dtype=str,
+            keep_default_na=False,
+            na_values=[],
+        )
         # Ensure all expected columns exist
         for col in config.CSV_COLUMNS:
             if col not in df.columns:
@@ -91,7 +99,12 @@ def load_events() -> pd.DataFrame:
     if not os.path.exists(config.EVENTS_CSV):
         return pd.DataFrame(columns=config.EVENTS_CSV_COLUMNS)
     try:
-        df = pd.read_csv(config.EVENTS_CSV, dtype=str)
+        df = pd.read_csv(
+            config.EVENTS_CSV,
+            dtype=str,
+            keep_default_na=False,
+            na_values=[],
+        )
         for col in config.EVENTS_CSV_COLUMNS:
             if col not in df.columns:
                 df[col] = ""

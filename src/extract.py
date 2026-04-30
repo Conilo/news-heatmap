@@ -81,7 +81,11 @@ group:
 
 crime_type:
   One of: homicidio, desaparición, extorsión, narcotráfico, enfrentamiento,
-          secuestro, robo, amenaza, corrupción, otro
+          secuestro, robo, amenaza, corrupción, disturbio, otro
+
+  Use `disturbio` for narcobloqueos, quema de vehículos o negocios, motines,
+  y disturbios públicos relacionados con grupos criminales (típicamente tras
+  la captura de un líder).
 
 confidence:
   Float 0.0–1.0 reflecting your certainty across all fields.
@@ -105,6 +109,12 @@ Input:
   Description: Detienen en México a narco líder del Cártel Jalisco Nueva Generación
 Output:
 {"state": "Desconocido", "municipality": "Desconocido", "group": "CJNG", "crime_type": "otro", "confidence": 0.70}
+
+Input:
+  Title: Incendian autos y negocios en Nayarit tras captura de "El Jardinero", posible sucesor del "Mencho" en el CJNG
+  Description: Tras la detención de "El Jardinero", presuntos integrantes del CJNG quemaron vehículos y comercios en varios municipios de Nayarit, generando narcobloqueos.
+Output:
+{"state": "Nayarit", "municipality": "Desconocido", "group": "CJNG", "crime_type": "disturbio", "confidence": 0.92}
 """
 
 _FALLBACK: dict[str, Any] = {

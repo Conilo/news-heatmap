@@ -394,7 +394,12 @@ def cluster_articles(
         key = _cluster_key(row)
         if key not in key_to_event:
             existing = articles.loc[idx, "event_id"]
-            key_to_event[key] = existing if existing else str(uuid.uuid4())
+            # NaN is truthy in Python (it's a non-zero float), so a plain
+            # truthy check would propagate NaN here — guard explicitly.
+            if pd.isna(existing) or not str(existing).strip():
+                key_to_event[key] = str(uuid.uuid4())
+            else:
+                key_to_event[key] = str(existing)
 
     # Stage 1b: absorb Desconocido-state clusters into unambiguous state clusters
     key_to_event = _absorb_desconocido(key_to_event)
