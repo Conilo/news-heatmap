@@ -2,11 +2,12 @@
 Cluster articles into deduplicated events.
 
 Stage 1 (always runs): group articles by
-    (normalized_state, normalized_group, crime_type, date_bucket)
+    (normalized_state, normalized_group, date_bucket)
 where date_bucket = floor(days_since_epoch / CLUSTER_WINDOW_DAYS).
+event_type is not part of the Stage-1 key (see ``_cluster_key``).
 
 Stage 2 (optional, SLM): for cross-key candidate pairs that share the same
-group + date_bucket but differ on state or crime_type, ask the SLM whether
+group + date_bucket but differ on state, ask the SLM whether
 they describe the same specific incident and merge if confirmed.
 """
 
@@ -65,7 +66,7 @@ def _cluster_key(row: pd.Series) -> tuple:
     """
     Return the Stage-1 grouping key for a single article row.
 
-    crime_type is intentionally excluded: the SLM often labels the same
+    event_type is intentionally excluded: the SLM often labels the same
     incident as "narcotráfico", "homicidio", "enfrentamiento", or "otro"
     depending on headline framing, which would split one real event into
     multiple clusters.
@@ -128,7 +129,7 @@ def _build_event_row(event_id: str, group_df: pd.DataFrame) -> dict:
         "state": _most_common(group_df["state"].apply(_normalize_state)),
         "municipality": _most_common(group_df["municipality"], exclude={"Desconocido"}),
         "group": _most_common(group_df["group"].apply(normalize_group), exclude={"Desconocido"}),
-        "crime_type": _most_common(group_df["crime_type"]),
+        "event_type": _most_common(group_df["event_type"]),
         "first_seen": dates.min().isoformat() if not dates.dropna().empty else "",
         "last_seen": dates.max().isoformat() if not dates.dropna().empty else "",
         "article_count": len(group_df),
@@ -330,7 +331,7 @@ def _stage2_merge(
     use_slm: bool = True,
 ) -> dict[tuple, str]:
     """
-    For articles whose Stage-1 key differs only in state or crime_type but share
+    For articles whose Stage-1 key differs only in state but share
     the same (group, date_bucket), optionally ask the SLM to merge them.
 
     Returns updated key_to_event mapping.
@@ -413,7 +414,7 @@ def cluster_articles(
     if "event_id" not in articles.columns:
         articles["event_id"] = ""
 
-    # Stage 1: assign a UUID to each unique (state, group, date_bucket)
+    # Stage 1: assign a UUID to each unique (state, group, date_bucket) key
     key_to_event: dict[tuple, str] = {}
     for idx, row in articles.iterrows():
         key = _cluster_key(row)
@@ -480,4 +481,4 @@ def recompute_events(use_slm: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]
 
 if __name__ == "__main__":
     arts, evts = recompute_events(use_slm=False)
-    print(evts[["state", "group", "crime_type", "article_count", "confidence", "canonical_title"]].to_string())
+    print(evts[["state", "group", "event_type", "article_count", "confidence", "canonical_title"]].to_string())

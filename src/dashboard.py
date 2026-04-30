@@ -130,14 +130,14 @@ def _render_article_card(row: pd.Series) -> None:
     state = str(row.get("state", "—") or "—")
     municipality = str(row.get("municipality", "—") or "—")
     group = str(row.get("group", "—") or "—")
-    crime_type = str(row.get("crime_type", "—") or "—")
+    event_type = str(row.get("event_type", "—") or "—")
     conf = float(pd.to_numeric(row.get("confidence", 0), errors="coerce") or 0.0)
 
     muni_part = f" · {municipality}" if municipality not in {"—", "Desconocido"} else ""
     st.caption(
         f"📅 {pub_date} &nbsp;·&nbsp; 📰 {source} &nbsp;·&nbsp; "
         f"📍 {state}{muni_part} &nbsp;·&nbsp; "
-        f"🔴 {group} &nbsp;·&nbsp; ⚖️ {crime_type} &nbsp;·&nbsp; conf. {conf:.2f}"
+        f"🔴 {group} &nbsp;·&nbsp; ⚖️ {event_type} &nbsp;·&nbsp; conf. {conf:.2f}"
     )
     if url:
         st.markdown(f"[Ver artículo original ↗]({url})")
@@ -230,16 +230,16 @@ def _render_state_detail(
         st.info("No hay eventos registrados para este estado en el período seleccionado.")
         return
 
-    top_crime = (
-        state_events["crime_type"].value_counts().index[0]
-        if not state_events["crime_type"].dropna().empty
+    top_event_type = (
+        state_events["event_type"].value_counts().index[0]
+        if not state_events["event_type"].dropna().empty
         else "—"
     )
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Eventos", len(state_events))
     m2.metric("Artículos vinculados", int(state_events["article_count"].sum()))
     m3.metric("Grupos activos", state_events[state_events["group"] != "Desconocido"]["group"].nunique())
-    m4.metric("Tipo principal", top_crime)
+    m4.metric("Tipo principal", top_event_type)
 
     col_left, col_right = st.columns(2)
 
@@ -259,11 +259,11 @@ def _render_state_detail(
         fig_g.update_layout(height=300, margin={"t": 40, "b": 0, "l": 0, "r": 0})
         st.plotly_chart(fig_g, use_container_width=True)
 
-        crime_counts = state_events["crime_type"].value_counts().reset_index()
-        crime_counts.columns = ["crime_type", "count"]
+        type_counts = state_events["event_type"].value_counts().reset_index()
+        type_counts.columns = ["event_type", "count"]
         fig_c = px.pie(
-            crime_counts, names="crime_type", values="count",
-            title="Tipos de crimen",
+            type_counts, names="event_type", values="count",
+            title="Tipos de evento",
         )
         fig_c.update_layout(height=280, margin={"t": 40, "b": 0, "l": 0, "r": 0})
         st.plotly_chart(fig_c, use_container_width=True)
@@ -315,7 +315,7 @@ def _render_state_detail(
 
     for _, ev in state_events_sorted.iterrows():
         label = (
-            f"[{ev['crime_type'].upper()}] {ev['canonical_title'][:80]} "
+            f"[{ev['event_type'].upper()}] {ev['canonical_title'][:80]} "
             f"— {ev['group']} "
             f"({ev['article_count']} art., conf {float(ev['confidence']):.2f})"
         )
@@ -490,9 +490,9 @@ def main() -> None:
         all_groups = sorted(events_df["group"].dropna().unique().tolist())
         selected_groups = st.multiselect("Criminal groups", options=all_groups, default=all_groups)
 
-        # Crime type filter — from events
-        all_crimes = sorted(events_df["crime_type"].dropna().unique().tolist())
-        selected_crimes = st.multiselect("Crime type", options=all_crimes, default=all_crimes)
+        # Event type filter — from events
+        all_event_types = sorted(events_df["event_type"].dropna().unique().tolist())
+        selected_event_types = st.multiselect("Event type", options=all_event_types, default=all_event_types)
 
         st.divider()
         st.caption(
@@ -512,8 +512,8 @@ def main() -> None:
 
     if selected_groups:
         ev = ev[ev["group"].isin(selected_groups)]
-    if selected_crimes:
-        ev = ev[ev["crime_type"].isin(selected_crimes)]
+    if selected_event_types:
+        ev = ev[ev["event_type"].isin(selected_event_types)]
 
     # Unassociated articles: not linked to any event (across ALL articles, unfiltered)
     if "event_id" in articles_df.columns:

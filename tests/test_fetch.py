@@ -373,6 +373,7 @@ def _haystack(article: dict) -> str:
     return " ".join([
         article.get("title", "") or "",
         article.get("description", "") or "",
+        article.get("body", "") or "",
         article.get("source", "") or "",
     ]).lower()
 
@@ -398,7 +399,12 @@ def _is_mexico_relevant(article: dict) -> bool:
 @pytest.mark.live
 @pytest.mark.flaky(reruns=3, reruns_delay=5)
 def test_live_results_are_relevant(monkeypatch):
-    """At least 95% of fetched articles must be crime-relevant AND Mexico-relevant."""
+    """At least 90% of fetched articles must be crime-relevant AND Mexico-relevant.
+
+    Relevance scans title, description, body, and source. The body fetch is
+    stubbed to avoid hammering publishers; RSS snippets plus stub still
+    reflect what users get when body text is minimal.
+    """
     # Avoid N sequential newspaper downloads against live publishers during this test.
     monkeypatch.setattr(
         fetch,

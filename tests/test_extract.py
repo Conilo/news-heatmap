@@ -60,7 +60,7 @@ def test_validate_fields_fills_missing_keys_from_fallback():
         "state": "Desconocido",
         "municipality": "Desconocido",
         "group": "Desconocido",
-        "crime_type": "otro",
+        "event_type": "otro",
         "confidence": 0.0,
     }
 
@@ -70,13 +70,13 @@ def test_validate_fields_treats_none_empty_and_null_string_as_missing():
         "state": None,
         "municipality": "",
         "group": "null",
-        "crime_type": "homicidio",
+        "event_type": "homicidio",
         "confidence": 0.5,
     })
     assert result["state"] == "Desconocido"
     assert result["municipality"] == "Desconocido"
     assert result["group"] == "Desconocido"
-    assert result["crime_type"] == "homicidio"
+    assert result["event_type"] == "homicidio"
     assert result["confidence"] == 0.5
 
 
@@ -116,7 +116,7 @@ def test_extract_article_merges_slm_fields_and_adds_processed_at(monkeypatch):
         "chat",
         _make_fake_chat(
             '{"state": "Sinaloa", "municipality": "Culiacán", "group": "CDS", '
-            '"crime_type": "homicidio", "confidence": 0.95}'
+            '"event_type": "homicidio", "confidence": 0.95}'
         ),
     )
 
@@ -132,7 +132,7 @@ def test_extract_article_merges_slm_fields_and_adds_processed_at(monkeypatch):
     assert result["state"] == "Sinaloa"
     assert result["municipality"] == "Culiacán"
     assert result["group"] == "CDS"
-    assert result["crime_type"] == "homicidio"
+    assert result["event_type"] == "homicidio"
     assert result["confidence"] == 0.95
 
     # processed_at is a valid ISO-format timestamp
@@ -144,7 +144,7 @@ def test_extract_article_handles_markdown_fenced_response(monkeypatch):
     fenced = (
         '```json\n'
         '{"state": "Jalisco", "municipality": "Guadalajara", "group": "CJNG", '
-        '"crime_type": "narcotráfico", "confidence": 0.8}\n'
+        '"event_type": "narcotráfico", "confidence": 0.8}\n'
         '```'
     )
     monkeypatch.setattr(extract.ollama, "chat", _make_fake_chat(fenced))
@@ -154,7 +154,7 @@ def test_extract_article_handles_markdown_fenced_response(monkeypatch):
     assert result["state"] == "Jalisco"
     assert result["municipality"] == "Guadalajara"
     assert result["group"] == "CJNG"
-    assert result["crime_type"] == "narcotráfico"
+    assert result["event_type"] == "narcotráfico"
     assert result["confidence"] == 0.8
 
 
@@ -176,7 +176,7 @@ def test_extract_article_falls_back_on_ollama_exception(monkeypatch, capsys):
     assert result["state"] == "Desconocido"
     assert result["municipality"] == "Desconocido"
     assert result["group"] == "Desconocido"
-    assert result["crime_type"] == "otro"
+    assert result["event_type"] == "otro"
     assert result["confidence"] == 0.0
 
     # processed_at still set
@@ -233,7 +233,7 @@ def test_extract_articles_skips_urls_in_skip_set(monkeypatch):
         calls.append(user_msg)
         return _ollama_response(
             '{"state": "Sinaloa", "municipality": "Culiacán", "group": "CDS", '
-            '"crime_type": "homicidio", "confidence": 0.9}'
+            '"event_type": "homicidio", "confidence": 0.9}'
         )
 
     monkeypatch.setattr(extract.ollama, "chat", fake_chat)
@@ -259,7 +259,7 @@ def test_extract_articles_defaults_skip_urls_to_empty_set(monkeypatch):
         call_count["n"] += 1
         return _ollama_response(
             '{"state": "Sinaloa", "municipality": "Culiacán", "group": "CDS", '
-            '"crime_type": "homicidio", "confidence": 0.9}'
+            '"event_type": "homicidio", "confidence": 0.9}'
         )
 
     monkeypatch.setattr(extract.ollama, "chat", fake_chat)

@@ -79,9 +79,13 @@ municipality:
 group:
   Name of the criminal organization (e.g. "CJNG", "Cártel de Sinaloa", "Los Zetas"), or "Desconocido".
 
-crime_type:
+event_type:
   One of: homicidio, desaparición, extorsión, narcotráfico, enfrentamiento,
-          secuestro, robo, amenaza, corrupción, disturbio, otro
+          secuestro, robo, amenaza, corrupción, disturbio, captura, detención, otro
+
+  Use `captura` or `detención` when the story centers on authorities capturing
+  or detaining suspects or leaders (Marina, Guardia Nacional, fiscalía, operativos).
+  Prefer the word that matches the headline; both are valid for arrest/capture news.
 
   Use `disturbio` for narcobloqueos, quema de vehículos o negocios, motines,
   y disturbios públicos relacionados con grupos criminales (típicamente tras
@@ -96,32 +100,32 @@ Input:
   Title: La Marina detiene en Nayarit al Jardinero, líder del CJNG
   Description: La Marina detiene en Nayarit al Jardinero, líder del CJNG
 Output:
-{"state": "Nayarit", "municipality": "Desconocido", "group": "CJNG", "crime_type": "otro", "confidence": 0.95}
+{"state": "Nayarit", "municipality": "Desconocido", "group": "CJNG", "event_type": "detención", "confidence": 0.95}
 
 Input:
   Title: Caen 37 integrantes de la Mafia Mexicana ligados al Cártel de Sinaloa tras redada en California
   Description: Caen 37 integrantes de la Mafia Mexicana ligados al Cártel de Sinaloa tras redada en California
 Output:
-{"state": "Internacional", "municipality": "California", "group": "Cártel de Sinaloa", "crime_type": "narcotráfico", "confidence": 0.97}
+{"state": "Internacional", "municipality": "California", "group": "Cártel de Sinaloa", "event_type": "narcotráfico", "confidence": 0.97}
 
 Input:
   Title: Detienen en México a narco líder del Cártel Jalisco Nueva Generación
   Description: Detienen en México a narco líder del Cártel Jalisco Nueva Generación
 Output:
-{"state": "Desconocido", "municipality": "Desconocido", "group": "CJNG", "crime_type": "otro", "confidence": 0.70}
+{"state": "Desconocido", "municipality": "Desconocido", "group": "CJNG", "event_type": "detención", "confidence": 0.70}
 
 Input:
   Title: Incendian autos y negocios en Nayarit tras captura de "El Jardinero", posible sucesor del "Mencho" en el CJNG
   Description: Tras la detención de "El Jardinero", presuntos integrantes del CJNG quemaron vehículos y comercios en varios municipios de Nayarit, generando narcobloqueos.
 Output:
-{"state": "Nayarit", "municipality": "Desconocido", "group": "CJNG", "crime_type": "disturbio", "confidence": 0.92}
+{"state": "Nayarit", "municipality": "Desconocido", "group": "CJNG", "event_type": "disturbio", "confidence": 0.92}
 """
 
 _FALLBACK: dict[str, Any] = {
     "state": "Desconocido",
     "municipality": "Desconocido",
     "group": "Desconocido",
-    "crime_type": "otro",
+    "event_type": "otro",
     "confidence": 0.0,
 }
 

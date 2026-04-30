@@ -122,4 +122,4 @@ pytest                # fast unit tests only
 pytest --live         # also runs the live Google News statistical test
 ```
 
-The `--live` test asserts that at least 95% of fetched articles are both crime-relevant and Mexico-relevant.
+The `--live` test asserts that at least 90% of fetched articles are both crime-relevant and Mexico-relevant.
