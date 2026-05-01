@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -21,7 +22,7 @@ from store import append_new, get_processed_urls, load, load_events
 # Page config
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Mexico Cartel Heatmap",
+    page_title="Crimen Organizado Heatmap",
     page_icon="🗺️",
     layout="wide",
 )
@@ -122,6 +123,24 @@ def _run_pipeline() -> None:
 # Article card renderer
 # ---------------------------------------------------------------------------
 
+_ARTICLE_BODY_PREVIEW_CHARS = 600
+
+
+def _shorten_article_body(text: str | None, max_chars: int = _ARTICLE_BODY_PREVIEW_CHARS) -> str:
+    """Single-line-ish excerpt for expandable cards (whitespace collapsed, word-boundary cut)."""
+    s = str(text or "").strip()
+    if not s:
+        return ""
+    s = re.sub(r"\s+", " ", s)
+    if len(s) <= max_chars:
+        return s
+    chunk = s[:max_chars]
+    cut = chunk.rsplit(" ", 1)[0]
+    if len(cut) < max_chars // 3:
+        cut = chunk
+    return cut.rstrip() + "…"
+
+
 def _render_article_card(row: pd.Series) -> None:
     """Render a single article's metadata below its expander label."""
     url = str(row.get("url", "") or "")
@@ -139,6 +158,10 @@ def _render_article_card(row: pd.Series) -> None:
         f"📍 {state}{muni_part} &nbsp;·&nbsp; "
         f"🔴 {group} &nbsp;·&nbsp; ⚖️ {event_type} &nbsp;·&nbsp; conf. {conf:.2f}"
     )
+    preview = _shorten_article_body(row.get("body"))
+    if preview:
+        st.caption("Extracto del artículo")
+        st.text(preview)
     if url:
         st.markdown(f"[Ver artículo original ↗]({url})")
 
