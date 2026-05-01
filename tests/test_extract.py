@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import csv
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
 from src import extract
+
+
+FIXTURE_STATE_INFERENCE_CSV = (
+    Path(__file__).resolve().parent / "fixtures" / "articles_state_inference_sample.csv"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +117,17 @@ def _sample_article() -> dict:
     }
 
 
+def _sample_article_no_geo_hints() -> dict:
+    return {
+        "url": "https://example.com/2",
+        "title": "Autoridades reportan una detención en operativo rutinario",
+        "description": "Elementos federales dieron cuenta de cargos formulados ante el Ministerio Público.",
+        "body": "El comunicado oficial no ubicó colonias específicas en el norte del país.",
+        "published_date": "2024-01-02",
+        "source": "Generic Wire",
+    }
+
+
 def test_extract_article_merges_slm_fields_and_adds_processed_at(monkeypatch):
     monkeypatch.setattr(
         extract.ollama,
@@ -164,7 +182,7 @@ def test_extract_article_falls_back_on_ollama_exception(monkeypatch, capsys):
 
     monkeypatch.setattr(extract.ollama, "chat", boom)
 
-    article = _sample_article()
+    article = _sample_article_no_geo_hints()
     result = extract.extract_article(article)
     out = capsys.readouterr().out
 
@@ -195,7 +213,7 @@ def test_extract_article_skips_slm_when_body_empty(monkeypatch, capsys):
 
     monkeypatch.setattr(extract.ollama, "chat", fake_chat)
 
-    article = {**_sample_article(), "body": ""}
+    article = {**_sample_article_no_geo_hints(), "body": ""}
     result = extract.extract_article(article)
 
     assert calls == []
@@ -213,13 +231,41 @@ def test_extract_article_skips_slm_when_body_whitespace_only(monkeypatch):
 
     monkeypatch.setattr(extract.ollama, "chat", fake_chat)
 
-    article = {**_sample_article(), "body": "  \n\t  "}
+    article = {**_sample_article_no_geo_hints(), "body": "  \n\t  "}
     result = extract.extract_article(article)
 
     assert calls == []
     assert result["group"] == "Desconocido"
 
 
+def test_extract_article_fills_state_when_slm_returns_desconocido(monkeypatch):
+    monkeypatch.setattr(
+        extract.ollama,
+        "chat",
+        _make_fake_chat(
+            '{"state": "Desconocido", "municipality": "Culiacán", "group": "Desconocido", '
+            '"event_type": "otro", "confidence": 0.2}'
+        ),
+    )
+    result = extract.extract_article(_sample_article())
+    assert result["state"] == "Sinaloa"
+
+
+def test_infer_state_from_fixture_csv_matches_expected_state():
+    with FIXTURE_STATE_INFERENCE_CSV.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            mun_col = row.get("municipality") or ""
+            got = extract._infer_state_from_municipality(mun_col)
+            exp = (row.get("expected_state") or "").strip()
+            if exp:
+                assert got == exp, (mun_col, got, exp)
+            else:
+                assert got is None, (mun_col, got)
+
+
+def test_infer_state_from_municipality_handles_substrings():
+    assert extract._infer_state_from_municipality("centro de Culiacán") == "Sinaloa"
 # ---------------------------------------------------------------------------
 # Group D — extract_articles()
 # ---------------------------------------------------------------------------

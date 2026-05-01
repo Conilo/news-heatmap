@@ -91,15 +91,22 @@ The dashboard has a **Refresh** button that fetches candidates from Google News,
 
 ## Configuration
 
-Edit `config.py` to change:
+Edit **`user_config.py`** for the usual knobs:
+
 - `MODEL_NAME` — Ollama model (e.g. `"llama3.2:3b"`, `"phi3:mini"`, `"gemma3:4b"`)
 - `LOOKBACK_DAYS` — how many days back to fetch news
 - `MAX_ARTICLES` — target count of articles **with downloadable full text** per Refresh run
-- `GNEWS_RSS_MAX_ITEMS` — max RSS entries to scan from Google News (must be ≥ `MAX_ARTICLES`; increase if many hits lack body)
+- `FETCH_QUERY_TERMS` / `FETCH_QUERY_GEO` — Google News query (OR terms plus geographic anchor; multi-word terms auto-quoted)
+
+For deeper tuning, edit **`advanced_config.py`**:
+
+- `GNEWS_RSS_MAX_ITEMS` — max RSS entries scanned (derived from `MAX_ARTICLES` unless you override the formula there)
 - `ARTICLE_BODY_MAX_CHARS_SLM` — max characters of article body stored and sent to the SLM
 - `GOOGLE_NEWS_DECODE_INTERVAL_SEC` — optional delay between Google News URL decodes (rate limits)
 - `ARTICLE_FETCH_TIMEOUT_SEC` / `ARTICLE_FETCH_USER_AGENT` — newspaper3k HTTP behavior (some sites 403 generic bots)
-- `FETCH_QUERY_TERMS` — terms used to build the Google News query (joined with OR; multi-word terms auto-quoted)
+- `CLUSTER_WINDOW_DAYS`, paths, CSV column lists, and group/state normalization maps
+
+Application code imports the merged namespace via **`config.py`** (`import config`); change that file only if you rename modules or re-export names.
 
 ## Fetch limitations
 

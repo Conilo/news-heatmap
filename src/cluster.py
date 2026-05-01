@@ -26,6 +26,7 @@ import pandas as pd
 
 import config
 from config import normalize_group
+from geo_normalize import normalize_state as _normalize_state
 from store import load, load_events, save, save_events
 
 # ---------------------------------------------------------------------------
@@ -55,11 +56,6 @@ def _date_bucket(date_val: Any) -> int:
         return int(delta.days // config.CLUSTER_WINDOW_DAYS)
     except Exception:
         return -1
-
-
-def _normalize_state(state: str) -> str:
-    key = (state or "").strip().lower()
-    return config.STATE_NAME_MAP.get(key, state)
 
 
 def _cluster_key(row: pd.Series) -> tuple:

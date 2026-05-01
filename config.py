@@ -1,284 +1,61 @@
-"""Central configuration for the news analyzer pipeline."""
+"""Stable import surface for the pipeline: ``import config`` everywhere.
 
-# ---------------------------------------------------------------------------
-# SLM / Ollama
-# ---------------------------------------------------------------------------
-MODEL_NAME = "llama3.2:3b"   # swap to e.g. "phi3:mini" or "gemma3:4b"
-OLLAMA_HOST = "http://localhost:11434"
+Tune common behavior in ``user_config.py``. For RSS limits, HTTP, paths,
+clustering buckets, CSV column lists, and group/state maps, see
+``advanced_config.py``.
+"""
 
-# ---------------------------------------------------------------------------
-# News fetching
-# ---------------------------------------------------------------------------
-LOOKBACK_DAYS = 14
-MAX_ARTICLES = 30   # target number of articles **with** full text per run (SLM + storage)
+from __future__ import annotations
 
-# Google News RSS items to scan (must be >= MAX_ARTICLES). Larger helps when many hits lack a downloadable body.
-GNEWS_RSS_MAX_ITEMS = max(MAX_ARTICLES * 4, 100)
-
-# Truncate downloaded article text for CSV storage and SLM context (newspaper3k).
-ARTICLE_BODY_MAX_CHARS_SLM = 8000
-
-# Delay between Google News URL decodes (googlenewsdecoder) to reduce rate limits; 0 = none.
-GOOGLE_NEWS_DECODE_INTERVAL_SEC = 0.0
-
-# newspaper3k HTTP settings (some publishers 403 bare bots; this is not a paywall workaround).
-ARTICLE_FETCH_TIMEOUT_SEC = 25
-ARTICLE_FETCH_USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+from advanced_config import (
+    ARTICLE_BODY_MAX_CHARS_SLM,
+    ARTICLE_FETCH_TIMEOUT_SEC,
+    ARTICLE_FETCH_USER_AGENT,
+    ARTICLES_CSV,
+    CLUSTER_WINDOW_DAYS,
+    CSV_COLUMNS,
+    DATA_DIR,
+    EVENTS_CSV,
+    EVENTS_CSV_COLUMNS,
+    GEOJSON_FEATURE_KEY,
+    GEOJSON_PATH,
+    GOOGLE_NEWS_DECODE_INTERVAL_SEC,
+    GNEWS_RSS_MAX_ITEMS,
+    GROUP_ALIASES,
+    LOCATION_TO_STATE,
+    STATE_NAME_MAP,
+    normalize_group,
 )
 
-# Terms used to build the Google News fetch query. Keep this list small
-# (~8-10 broad terms): long OR-chains dilute Google's relevance ranking.
-# Multi-word terms are auto-quoted by `fetch._build_query()`.
-# Specific cartel names (CJNG, Sinaloa, etc.) are implicitly covered by
-# `cartel`/`narco` and surface naturally in results.
-FETCH_QUERY_TERMS = [
-    "cartel",
-    "narco",
-    "sicario",
-    "crimen organizado",
-    "fentanilo",
-    "homicidio",
-    "ejecutado",
-    "grupo delictivo",
-]
+from user_config import (
+    FETCH_QUERY_GEO,
+    FETCH_QUERY_TERMS,
+    LOOKBACK_DAYS,
+    MAX_ARTICLES,
+    MODEL_NAME,
+)
 
-# Geographic anchor appended to the query (implicit AND).
-FETCH_QUERY_GEO = "mexico"
-
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
-DATA_DIR = "data"
-ARTICLES_CSV = f"{DATA_DIR}/articles.csv"
-EVENTS_CSV = f"{DATA_DIR}/events.csv"
-GEOJSON_PATH = "assets/mexico.geojson"
-
-# ---------------------------------------------------------------------------
-# Event clustering
-# ---------------------------------------------------------------------------
-CLUSTER_WINDOW_DAYS = 5   # articles within this many days share a date bucket
-
-EVENTS_CSV_COLUMNS = [
-    "event_id",
-    "state",
-    "municipality",
-    "group",
-    "event_type",
-    "first_seen",
-    "last_seen",
-    "article_count",
-    "unique_sources",
-    "confidence",
-    "canonical_title",
-]
-
-# ---------------------------------------------------------------------------
-# CSV schema — column names kept in one place
-# ---------------------------------------------------------------------------
-# GeoJSON featureidkey for Plotly choropleth
-GEOJSON_FEATURE_KEY = "properties.name"
-
-# Normalize common SLM state name variants → exact GeoJSON names
-STATE_NAME_MAP: dict[str, str] = {
-    "aguascalientes": "Aguascalientes",
-    "baja california": "Baja California",
-    "baja california norte": "Baja California",
-    "baja california sur": "Baja California Sur",
-    "campeche": "Campeche",
-    "chiapas": "Chiapas",
-    "chihuahua": "Chihuahua",
-    "ciudad de mexico": "Ciudad de México",
-    "ciudad de méxico": "Ciudad de México",
-    "cdmx": "Ciudad de México",
-    "coahuila": "Coahuila",
-    "coahuila de zaragoza": "Coahuila",
-    "colima": "Colima",
-    "durango": "Durango",
-    "guanajuato": "Guanajuato",
-    "guerrero": "Guerrero",
-    "hidalgo": "Hidalgo",
-    "jalisco": "Jalisco",
-    "mexico": "México",
-    "méxico": "México",
-    "estado de mexico": "México",
-    "estado de méxico": "México",
-    "michoacan": "Michoacán",
-    "michoacán": "Michoacán",
-    "morelos": "Morelos",
-    "nayarit": "Nayarit",
-    "nuevo leon": "Nuevo León",
-    "nuevo león": "Nuevo León",
-    "oaxaca": "Oaxaca",
-    "puebla": "Puebla",
-    "queretaro": "Querétaro",
-    "querétaro": "Querétaro",
-    "quintana roo": "Quintana Roo",
-    "san luis potosi": "San Luis Potosí",
-    "san luis potosí": "San Luis Potosí",
-    "sinaloa": "Sinaloa",
-    "sonora": "Sonora",
-    "tabasco": "Tabasco",
-    "tamaulipas": "Tamaulipas",
-    "tlaxcala": "Tlaxcala",
-    "veracruz": "Veracruz",
-    "yucatan": "Yucatán",
-    "yucatán": "Yucatán",
-    "zacatecas": "Zacatecas",
-}
-
-# ---------------------------------------------------------------------------
-# Group name canonicalization
-# ---------------------------------------------------------------------------
-# Maps any lowercase variant the SLM might produce → canonical display name.
-GROUP_ALIASES: dict[str, str] = {
-    # CJNG
-    "cjng": "CJNG",
-    "cartel jalisco nueva generacion": "CJNG",
-    "cartel jalisco nueva generación": "CJNG",
-    "cártel jalisco nueva generacion": "CJNG",
-    "cártel jalisco nueva generación": "CJNG",
-    "jalisco nueva generacion": "CJNG",
-    "jalisco nueva generación": "CJNG",
-    "cartel de jalisco": "CJNG",
-    "cártel de jalisco": "CJNG",
-    "cartel de jalisco nueva generacion": "CJNG",
-    "cartel de jalisco nueva generación": "CJNG",
-    "cártel de jalisco nueva generacion": "CJNG",
-    "cártel de jalisco nueva generación": "CJNG",
-    "el mencho": "CJNG",              # Nemesio Oseguera Cervantes, CJNG leader
-    "nemesio oseguera": "CJNG",
-    "cng": "CJNG",                    # common SLM typo for CJNG
-    # Cártel de Sinaloa
-    "cartel de sinaloa": "Cártel de Sinaloa",
-    "cártel de sinaloa": "Cártel de Sinaloa",
-    "sinaloa cartel": "Cártel de Sinaloa",
-    # NOTE: bare "sinaloa" removed — ambiguous with the state name
-    "los chapitos": "Cártel de Sinaloa",
-    "chapitos": "Cártel de Sinaloa",
-    "ismael zambada": "Cártel de Sinaloa",
-    "el mayo": "Cártel de Sinaloa",
-    "los salazar": "Los Salazar",     # Sinaloa-aligned faction, keep distinct
-    # Cártel del Pacífico  (keep distinct per user request)
-    "cartel del pacifico": "Cártel del Pacífico",
-    "cártel del pacifico": "Cártel del Pacífico",
-    "cartel del pacífico": "Cártel del Pacífico",
-    "cártel del pacífico": "Cártel del Pacífico",
-    # Cártel del Golfo
-    "cartel del golfo": "Cártel del Golfo",
-    "cártel del golfo": "Cártel del Golfo",
-    "gulf cartel": "Cártel del Golfo",
-    "cdg": "Cártel del Golfo",
-    # Los Zetas
-    "los zetas": "Los Zetas",
-    "zetas": "Los Zetas",
-    # Cártel del Noreste
-    "cartel del noreste": "Cártel del Noreste",
-    "cártel del noreste": "Cártel del Noreste",
-    "cdn": "Cártel del Noreste",
-    # Beltrán Leyva
-    "beltran leyva": "Beltrán Leyva",
-    "beltrán leyva": "Beltrán Leyva",
-    "organizacion beltran leyva": "Beltrán Leyva",
-    "organización beltrán leyva": "Beltrán Leyva",
-    "obl": "Beltrán Leyva",
-    # La Familia Michoacana
-    "familia michoacana": "La Familia Michoacana",
-    "la familia michoacana": "La Familia Michoacana",
-    "la familia": "La Familia Michoacana",
-    # Nueva Familia Michoacana (distinct from La Familia Michoacana)
-    "nueva familia michoacana": "Nueva Familia Michoacana",
-    "nueva familia": "Nueva Familia Michoacana",
-    # Caballeros Templarios
-    "caballeros templarios": "Caballeros Templarios",
-    "los caballeros templarios": "Caballeros Templarios",
-    "knights templar": "Caballeros Templarios",
-    # Guerreros Unidos
-    "guerreros unidos": "Guerreros Unidos",
-    # Los Viagras
-    "los viagras": "Los Viagras",
-    "viagras": "Los Viagras",
-}
-
-
-import re as _re
-import unicodedata as _unicodedata
-
-
-def _strip_accents(s: str) -> str:
-    return "".join(
-        c for c in _unicodedata.normalize("NFD", s)
-        if _unicodedata.category(c) != "Mn"
-    )
-
-
-def normalize_group(name: str) -> str:
-    """
-    Return the canonical group name for any known alias.
-
-    Three-step pipeline:
-      1. If the SLM returned comma-separated groups, take the first one.
-      2. Strip parenthetical abbreviations such as "(CJNG)" or "(CDG)".
-      3. Exact lowercase lookup, then accent-stripped fallback lookup.
-    """
-    if not name or name.strip().lower() in ("desconocido", "unknown", ""):
-        return "Desconocido"
-
-    # Step 1: take only the first group when multiple are comma-separated
-    first = name.split(",")[0].strip()
-
-    # Step 2: remove parenthetical content e.g. "(CJNG)" / "(Cártel del Golfo)"
-    cleaned = _re.sub(r"\s*\(.*?\)", "", first).strip()
-
-    # Step 3a: exact lowercase lookup
-    key = cleaned.lower()
-    if key in GROUP_ALIASES:
-        return GROUP_ALIASES[key]
-
-    # Step 3b: accent-stripped fallback (handles é/e, á/a mismatches)
-    key_no_accent = _strip_accents(key)
-    for alias_key, canonical in GROUP_ALIASES.items():
-        if _strip_accents(alias_key) == key_no_accent:
-            return canonical
-
-    # Return the cleaned string so parentheticals are at least removed
-    return cleaned
-
-
-# Cartel colors for the map (add more as needed)
-GROUP_COLORS: dict[str, str] = {
-    "Cártel de Sinaloa": "#1f77b4",
-    "CJNG": "#d62728",
-    "Cártel del Golfo": "#2ca02c",
-    "Los Zetas": "#9467bd",
-    "Cártel del Pacífico": "#17becf",
-    "Beltrán Leyva": "#8c564b",
-    "La Familia Michoacana": "#e377c2",
-    "Nueva Familia Michoacana": "#f7b6d2",
-    "Caballeros Templarios": "#7f7f7f",
-    "Cártel del Noreste": "#bcbd22",
-    "Los Salazar": "#ffbb78",
-    "Guerreros Unidos": "#98df8a",
-    "Los Viagras": "#c5b0d5",
-    "Desconocido": "#aec7e8",
-}
-
-# ---------------------------------------------------------------------------
-# CSV schema — column names kept in one place
-# ---------------------------------------------------------------------------
-CSV_COLUMNS = [
-    "url",
-    "title",
-    "description",
-    "body",
-    "published_date",
-    "source",
-    "state",
-    "municipality",
-    "group",
-    "event_type",
-    "confidence",
-    "processed_at",
-    "event_id",
+__all__ = [
+    "ARTICLE_BODY_MAX_CHARS_SLM",
+    "ARTICLE_FETCH_TIMEOUT_SEC",
+    "ARTICLE_FETCH_USER_AGENT",
+    "ARTICLES_CSV",
+    "CLUSTER_WINDOW_DAYS",
+    "CSV_COLUMNS",
+    "DATA_DIR",
+    "EVENTS_CSV",
+    "EVENTS_CSV_COLUMNS",
+    "FETCH_QUERY_GEO",
+    "FETCH_QUERY_TERMS",
+    "GEOJSON_FEATURE_KEY",
+    "GEOJSON_PATH",
+    "GOOGLE_NEWS_DECODE_INTERVAL_SEC",
+    "GNEWS_RSS_MAX_ITEMS",
+    "GROUP_ALIASES",
+    "LOCATION_TO_STATE",
+    "LOOKBACK_DAYS",
+    "MAX_ARTICLES",
+    "MODEL_NAME",
+    "STATE_NAME_MAP",
+    "normalize_group",
 ]

@@ -16,14 +16,15 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import config
-from store import append_new, get_processed_urls, load, load_events
+from geo_normalize import normalize_state as _normalize_state
+from store import append_new, get_processed_urls, load, load_events, save
 
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
 st.set_page_config(
     page_title="Crimen Organizado Heatmap",
-    page_icon="🗺️",
+    page_icon="🔴",
     layout="wide",
 )
 
@@ -46,11 +47,6 @@ def _all_state_names() -> list[str]:
 # ---------------------------------------------------------------------------
 # Normalisation helpers
 # ---------------------------------------------------------------------------
-
-def _normalize_state(state: str) -> str:
-    key = (state or "").strip().lower()
-    return config.STATE_NAME_MAP.get(key, state)
-
 
 def _apply_group_normalization(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -89,7 +85,7 @@ def _run_pipeline() -> None:
         st.warning(
             "No articles with downloadable full text were found. "
             "Check your connection, publisher blocks (403), or try increasing "
-            "`GNEWS_RSS_MAX_ITEMS` in config.py if the feed ran out of candidates."
+            "`GNEWS_RSS_MAX_ITEMS` in advanced_config.py if the feed ran out of candidates."
         )
         return
 
@@ -116,6 +112,37 @@ def _run_pipeline() -> None:
         recompute_events(use_slm=False)
 
     st.success(f"Added {len(extracted)} new articles and updated events.")
+    st.cache_data.clear()
+
+
+def _reprocess_cached_articles() -> None:
+    """Re-run SLM extraction on every row currently stored in articles.csv."""
+    from cluster import recompute_events
+    from extract import extract_article
+
+    df = load()
+    if df.empty:
+        st.warning("No rows in articles.csv — nothing to reprocess.")
+        return
+
+    rows = df.to_dict("records")
+    total = len(rows)
+    progress = st.progress(0, text="Re-running SLM on cached articles…")
+    updated: list[dict] = []
+
+    for i, row in enumerate(rows):
+        article = {col: str(row.get(col, "") or "") for col in config.CSV_COLUMNS}
+        result = extract_article(article)
+        updated.append({col: str(result.get(col, "") or "") for col in config.CSV_COLUMNS})
+        progress.progress((i + 1) / total, text=f"SLM extraction {i + 1}/{total}")
+
+    progress.empty()
+    save(pd.DataFrame(updated))
+
+    with st.spinner("Rebuilding events from articles…"):
+        recompute_events(use_slm=False)
+
+    st.success(f"Reprocessed {total} cached articles and updated events.")
     st.cache_data.clear()
 
 
@@ -477,6 +504,14 @@ def main() -> None:
 
         if st.button("🔄 Refresh (fetch + extract)", use_container_width=True):
             _run_pipeline()
+            st.rerun()
+
+        if st.button(
+            "🔁 Re-process articles (SLM)",
+            use_container_width=True,
+            help="Re-runs Ollama on each row in articles.csv (articles without body text keep fallback extracted fields). Rebuilds events.csv afterward.",
+        ):
+            _reprocess_cached_articles()
             st.rerun()
 
         st.divider()

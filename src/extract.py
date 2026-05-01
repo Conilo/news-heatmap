@@ -6,6 +6,7 @@ import json
 import re
 import sys
 import os
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any
 
@@ -21,57 +22,23 @@ import config
 
 SYSTEM_PROMPT = """\
 You are a structured data extractor specialized in Mexican crime and cartel news.
-Given a news article title, a short Google News description snippet, and the article body text, extract the following fields as valid JSON.
-Respond ONLY with valid JSON — no markdown fences, no explanation, nothing else.
+Given a news article title and the article body text, extract the following fields
+as valid JSON — no markdown fences, no explanation, nothing else.
 
 === FIELDS ===
 
 state:
   One of the 32 Mexican state names in Spanish (e.g. "Sinaloa", "Jalisco", "Tamaulipas"), OR:
-  - "Internacional"  — use this when the event CLEARLY happened outside Mexico
-    (e.g. arrests in the USA, Europe, Asia, Africa; court cases in the US; seizures abroad).
-  - "Desconocido"   — use this ONLY when the location is genuinely unknown and
-    the article does not provide enough clues, even indirect ones.
+  - "Internacional" — the event clearly happened outside Mexico (e.g. arrests or trials abroad).
+  - "Desconocido" — no usable geographic clue in the article (even indirect).
 
-  IMPORTANT — infer state from city/municipality names and indirect clues:
-    Culiacán, Mazatlán, Los Mochis, Guasave         → Sinaloa
-    Guadalajara, Zapopan, Puerto Vallarta, Tepic*    → Jalisco  (*Tepic = Nayarit)
-    Ciudad Juárez, Chihuahua, Parral                 → Chihuahua
-    Monterrey, San Pedro Garza, Linares              → Nuevo León
-    Tijuana, Ensenada, Mexicali                      → Baja California
-    Acapulco, Chilpancingo, Iguala                   → Guerrero
-    Morelia, Uruapan, Apatzingán                     → Michoacán
-    Reynosa, Matamoros, Nuevo Laredo, Tampico        → Tamaulipas
-    Torreón, Saltillo, Piedras Negras                → Coahuila
-    Cancún, Playa del Carmen, Chetumal               → Quintana Roo
-    Mérida, Valladolid                               → Yucatán
-    Oaxaca, Salina Cruz, Tuxtepec                    → Oaxaca
-    Veracruz, Xalapa, Coatzacoalcos, Poza Rica       → Veracruz
-    Villahermosa, Cárdenas                           → Tabasco
-    Tuxtla Gutiérrez, San Cristóbal, Tapachula       → Chiapas
-    Hermosillo, Nogales, Caborca, Cajeme             → Sonora
-    Tepic, Bahía de Banderas                         → Nayarit
-    Durango, Gómez Palacio                           → Durango
-    Zacatecas, Fresnillo                             → Zacatecas
-    Colima, Manzanillo                               → Colima
-    León, Irapuato, Celaya, Salamanca                → Guanajuato
-    Puebla, Tehuacán                                 → Puebla
-    Querétaro, San Juan del Río                      → Querétaro
-    Aguascalientes                                   → Aguascalientes
-    San Luis Potosí, Ciudad Valles                   → San Luis Potosí
-    La Paz, Los Cabos                                → Baja California Sur
-    Campeche                                         → Campeche
-    Chetumal                                         → Quintana Roo
-    Tlaxcala                                         → Tlaxcala
-    Pachuca, Tula                                    → Hidalgo
-    Toluca, Naucalpan, Ecatepec, Texcoco             → México (Estado de México)
-    Ciudad de México, CDMX, Iztapalapa, Tepito       → Ciudad de México
-    Cuernavaca, Cuautla                              → Morelos
-    Chilpancingo, Acapulco, Iguala                   → Guerrero
+  Infer the state from explicit place names when you can. If your best answer for state
+  is "Desconocido" but you did extract a municipality, put that city/municipality in
+  the municipality field anyway: deterministic city→state matching uses only that field
+  to fill state and never scans the raw article text.
 
-  IMPORTANT: Do NOT infer state from the cartel's home territory alone.
-  A CJNG story with no explicit location is "Desconocido", NOT "Jalisco".
-  Cartels operate across many states; only use explicit geographic clues.
+  Do NOT infer state from the cartel's home territory alone (e.g. CJNG with no location
+  stays "Desconocido", not "Jalisco").
 
 municipality:
   City or municipality name in Spanish, or "Desconocido".
@@ -130,9 +97,58 @@ _FALLBACK: dict[str, Any] = {
 }
 
 
+def _geo_normalize(text: str) -> str:
+    folded = unicodedata.normalize("NFD", text)
+    no_marks = "".join(c for c in folded if unicodedata.category(c) != "Mn")
+    return no_marks.casefold()
+
+
+_LOCATION_MATCH_ORDER: tuple[tuple[str, str], ...] = tuple(
+    sorted(config.LOCATION_TO_STATE.items(), key=lambda kv: (-len(kv[0]), kv[0]))
+)
+_STATE_MATCH_ORDER: tuple[tuple[str, str], ...] = tuple(
+    sorted(config.STATE_NAME_MAP.items(), key=lambda kv: (-len(kv[0]), kv[0]))
+)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _infer_state_from_municipality(municipality: str) -> str | None:
+    """
+    Map an SLM ``municipality`` string to estado using ``LOCATION_TO_STATE`` and
+    ``STATE_NAME_MAP`` (accent-folded; substring match inside the municipality only).
+    """
+    raw = (municipality or "").strip()
+    if not raw or _geo_normalize(raw) == _geo_normalize("Desconocido"):
+        return None
+
+    mun = _geo_normalize(raw)
+    if mun in config.LOCATION_TO_STATE:
+        return config.LOCATION_TO_STATE[mun]
+
+    for loc_key, est in _LOCATION_MATCH_ORDER:
+        if loc_key in mun:
+            return est
+
+    for phrase, est in _STATE_MATCH_ORDER:
+        pn = _geo_normalize(phrase)
+        if pn in mun:
+            return est
+
+    return None
+
+
+def _maybe_fill_state_from_municipality(extracted: dict[str, Any]) -> None:
+    """If state is still Desconocido, derive it only from ``municipality`` when lookup hits."""
+    if extracted.get("state") != "Desconocido":
+        return
+    mun = extracted.get("municipality")
+    inferred = _infer_state_from_municipality("" if mun is None else str(mun))
+    if inferred:
+        extracted["state"] = inferred
+
 
 def _parse_json_response(text: str) -> dict[str, Any]:
     """Extract the first JSON object from the model response."""
@@ -205,6 +221,8 @@ def extract_article(article: dict[str, Any]) -> dict[str, Any]:
             print(f"[extract] Warning: SLM call failed for '{article.get('title', '')}' — {exc}")
     else:
         print(f"[extract] Skipping SLM (no body): {article.get('title', '')[:60]}")
+
+    _maybe_fill_state_from_municipality(extracted)
 
     return {
         **article,
