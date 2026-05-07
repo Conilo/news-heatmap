@@ -79,7 +79,7 @@ streamlit run src/dashboard.py --server.address 127.0.0.1
 
 Then open **http://127.0.0.1:8501** (not only `localhost`) so the browser and server agree on IPv4; a fully white page is often a stale tab, a zombie process on port 8501, or `localhost` resolving to IPv6 while the server listens on IPv4.
 
-The sidebar page **Label eval cases** exports curated rows for `tests/fixtures/slm_eval/cases.csv` (pytest `--slm-live` harness).
+The app is multipage: the main script is the heatmap, and **Label eval cases** (`src/pages/Label_eval_cases.py`) appears in the sidebar. That page exports curated rows for `tests/fixtures/slm_eval/cases.csv` (pytest `--slm-live` harness).
 
 **If the page stays blank:** free the port (`lsof -ti:8501 | xargs kill -9`), close old tabs, try a fresh incognito window, and capture logs with:
 
@@ -89,7 +89,7 @@ streamlit run src/dashboard.py --server.headless=true --server.address 127.0.0.1
 
 Watch the terminal for a Python traceback when you load the page. Optional: `pip install watchdog` inside the conda env (Streamlit suggests this on macOS for faster reloads).
 
-The dashboard has a **Refresh** button that fetches candidates from Google News, keeps only rows with full text, runs the SLM, and updates the map.
+The main page has a **Refresh** button that fetches candidates from Google News, keeps only rows with full text, runs the SLM, appends to `articles.csv`, rebuilds clustered events, and refreshes the map. **Re-process articles (SLM)** re-runs extraction on every row already in `articles.csv` and rebuilds events (useful after prompt or model changes).
 
 ## Configuration
 
@@ -118,10 +118,12 @@ The Refresh pipeline **only appends** articles that got a non-empty `body`. Olde
 
 ## Output
 
-The dashboard shows:
-- **Choropleth map** of Mexico colored by incident count per state
-- **Sidebar filters**: date range, group, crime type
-- **Article table** with title, classified state/municipality, group, and crime type
+The main dashboard shows:
+- **Choropleth map** of Mexico colored by **clustered event count** per state (from `events.csv`, not raw article counts)
+- **Sidebar filters**: date range, criminal groups, and **event type** (`event_type`)
+- Summary metrics, **click a state** for detail (charts, event list with nested articles), and aggregate trend charts
+- Expandable **article** list (linked to filtered events; shows up to 100 rows—narrow filters to see more)
+- **Artículos sin evento**: articles the clustering step did not attach to any event
 
 ## Tests
 
@@ -133,4 +135,4 @@ pytest tests/test_extract_slm_eval.py --slm-live   # Ollama regression on fixtur
 ```
 
 The `--live` test asserts that at least 90% of fetched articles are both crime-relevant and Mexico-relevant.
-The `--slm-live` test needs rows with hand-filled `expected_state` in `tests/fixtures/slm_eval/cases.csv` (see that folder’s README).
+The `--slm-live` test needs rows with hand-filled `expected_state` in `tests/fixtures/slm_eval/cases.csv` (see that folder’s README). It **fails** if state accuracy on eligible rows falls below **95%** (`STATE_ACCURACY_FLOOR` in `tests/test_extract_slm_eval.py`).

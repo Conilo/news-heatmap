@@ -117,6 +117,7 @@ def _run_pipeline() -> None:
 
 def _reprocess_cached_articles() -> None:
     """Re-run SLM extraction on every row currently stored in articles.csv."""
+    from cluster import recompute_events
     from extract import extract_article
 
     df = load()
@@ -137,6 +138,9 @@ def _reprocess_cached_articles() -> None:
 
     progress.empty()
     save(pd.DataFrame(updated))
+
+    with st.spinner("Rebuilding events from articles…"):
+        recompute_events(use_slm=False)
 
     st.success(f"Reprocessed {total} cached articles and updated events.")
     st.cache_data.clear()
