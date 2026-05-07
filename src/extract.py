@@ -66,6 +66,11 @@ state:
   Do NOT infer state from the cartel's home territory alone (e.g. CJNG with no location
   stays "Desconocido", not "Jalisco") or from the article's publication place.
 
+  For biographical profiles, retrospectives, and opinion pieces (event_type "otro"),
+  use "Desconocido" for state — even when a Mexican state is mentioned in the body.
+  The state field captures where a specific criminal event occurred, not where a person
+  is from, generally operates, or has historical ties.
+
   INVALID values: "México" (the country), "EEUU", "USA", "Estados Unidos", 
   "EE.UU.", "United States". Events in the US or abroad → "Internacional".
   Do not confuse "México" (the country) with "Estado de México" (the state).
@@ -91,11 +96,12 @@ event_type:
      a prior arrest that triggered the disturbio — that does not change the classification.
 
   2. "detención" — headline contains any of: "detienen", "detuvo", "detenidos", "detención",
-     "capturan", "capturó", "captura", "capturado", "arrestan", "arrestados", "aprehenden",
-     "vinculan a proceso". Use "detención" even when the capture is for a past crime
-     (e.g. "Cuatro detenidos por homicidio" → "detención", NOT "homicidio").
-     Also use when the headline describes an arrest as the main event, even if the body
-     also describes the crime that prompted it.
+     "capturan", "capturó", "captura", "capturado", "arrestan", "arrestados", "arresta",
+     "arrestó", "aprehenden", "vinculan a proceso". Use "detención" even when:
+     - the capture is for a past crime (e.g. "Cuatro detenidos por homicidio" → "detención", NOT "homicidio")
+     - the body describes drug trafficking, money laundering, or cartel operations (→ still "detención", NOT "narcotráfico")
+     - the arrest occurs abroad (state="Internacional" but event_type still "detención")
+     The headline arrest verb always wins over the body's description of the underlying crime.
 
   3. "incautación" — headline contains "decomisan", "aseguran", "incautan" and a drug/weapon
      quantity. Use "incautación" even when arrests are also mentioned.
@@ -111,9 +117,17 @@ event_type:
      (→ "otro"); or articles that only mention cartels in passing without describing a
      specific trafficking operation or legal action.
 
-  5. "muerte" — headline says "fallece", "muere" or "muerto".
+  5. "homicidio" — headline says "asesinado", "asesinada", "ejecutado", "ejecutada",
+     "balaceado", "matan", "mató", "ultimaron" or describes a deliberate killing.
+     Use "homicidio" when the death is clearly intentional/violent, even if the word
+     "muerto" also appears.
 
-  6. "otro" — article is a biographical profile, an InSight Crime entry,
+  6. "muerte" — headline says "fallece", "muere" or "muerto" AND the headline itself does
+     NOT use a deliberate-killing verb ("asesinado", "ejecutado", "matan", "mató", etc.).
+     Use "muerte" even when the body describes violence, wounds, or a shooting — only the
+     headline's own wording matters here. Do NOT let body context flip "muerte" to "homicidio".
+
+  7. "otro" — article is a biographical profile, an InSight Crime entry,
      a narcocorrido or rap/music cultural analysis, a political party statement, a
      retrospective with no specific current criminal event, a public opinion survey about
      security or drugs, or editorial/political analysis about the diplomatic impact of
@@ -139,15 +153,21 @@ Output:
 
 Input:
   Title: Alejandro Treviño Morales, alias 'El Z42' - InSight Crime
-  Article: Alejandro Treviño Morales era miembro de Los Zetas y hermano del exlíder del cártel. Este perfil resume su trayectoria criminal.
+  Article: Alejandro Treviño Morales era miembro de Los Zetas y hermano del exlíder del cártel. Este perfil resume su trayectoria criminal en Tamaulipas y Nuevo León.
 Output:
-{"state": "Tamaulipas", "municipality": "Desconocido", "group": "Los Zetas", "event_type": "otro", "confidence": 0.95}
+{"state": "Desconocido", "municipality": "Desconocido", "group": "Los Zetas", "event_type": "otro", "confidence": 0.95}
 
 Input:
   Title: Cuatro detenidos por brutal homicidio de una familia en la Ciudad de México
   Article: Autoridades de Ciudad de México confirmaron la detención de cuatro presuntos responsables del asesinato de cuatro integrantes de una familia en el norte de la capital.
 Output:
 {"state": "Ciudad de México", "municipality": "Desconocido", "group": "Desconocido", "event_type": "detención", "confidence": 0.91}
+
+Input:
+  Title: Escalofriante video: matan a exreina de belleza mexicana de un balazo en la cabeza
+  Article: Una mujer identificada como ex reina de belleza fue asesinada a balazos en Culiacán. Las autoridades investigan presuntos vínculos con el crimen organizado.
+Output:
+{"state": "Sinaloa", "municipality": "Culiacán", "group": "Desconocido", "event_type": "homicidio", "confidence": 0.94}
 
 Input:
   Title: Fiscalía de Nueva York acusa formalmente al gobernador de Sinaloa y a otros nueve funcionarios por vínculos con el narco
@@ -166,6 +186,24 @@ Input:
   Article: El 56% de los mexicanos se muestra preocupado por el desarrollo del torneo debido al narcotráfico, según una encuesta.
 Output:
 {"state": "Desconocido", "municipality": "Desconocido", "group": "Desconocido", "event_type": "otro", "confidence": 0.88}
+
+Input:
+  Title: Capturan en Culiacán a operador del Cártel de Sinaloa que coordinaba envíos de fentanilo
+  Article: Elementos de la Guardia Nacional arrestaron a un hombre identificado como coordinador de rutas de tráfico de fentanilo del Cártel de Sinaloa en Culiacán. El detenido es señalado de organizar envíos de drogas hacia la frontera norte. Será puesto a disposición del Ministerio Público Federal.
+Output:
+{"state": "Sinaloa", "municipality": "Culiacán", "group": "Cártel de Sinaloa", "event_type": "detención", "confidence": 0.93}
+
+Input:
+  Title: Fallece presunto delincuente herido durante persecución en Tijuana, Baja California
+  Article: Un hombre herido durante una persecución policiaca en Tijuana falleció en el Hospital General horas después. Las circunstancias en que resultó herido no fueron detalladas por las autoridades. No se descarta que haya recibido un impacto de bala durante el operativo.
+Output:
+{"state": "Baja California", "municipality": "Tijuana", "group": "Desconocido", "event_type": "muerte", "confidence": 0.87}
+
+Input:
+  Title: DEA arresta en Chicago a operador financiero del Cártel de Sinaloa
+  Article: Agentes de la DEA detuvieron en Chicago a un ciudadano mexicano identificado como lavador de dinero del Cártel de Sinaloa. El detenido es acusado de mover decenas de millones de dólares de ganancias del narcotráfico a través de negocios fachada en Estados Unidos.
+Output:
+{"state": "Internacional", "municipality": "Desconocido", "group": "Cártel de Sinaloa", "event_type": "detención", "confidence": 0.91}
 """
 
 _FALLBACK: dict[str, Any] = {
