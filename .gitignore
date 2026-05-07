@@ -24,6 +24,7 @@ data/*.csv
 # IDE
 .vscode/
 .idea/
+.cursor/
 *.swp
 *.swo
 
