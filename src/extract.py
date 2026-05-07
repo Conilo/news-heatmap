@@ -15,9 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import ollama
 
 import config
-
-VALID_STATES = config.VALID_STATES
-VALID_EVENT_TYPES = config.VALID_EVENT_TYPES
+from advanced_config import VALID_EVENT_TYPES, VALID_STATES
 
 _VALID_STATES_SET = frozenset(VALID_STATES)
 _VALID_EVENT_TYPES_SET = frozenset(VALID_EVENT_TYPES)
