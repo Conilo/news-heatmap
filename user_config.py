@@ -7,7 +7,7 @@ pull, and which search terms anchor the Google News query.
 # ---------------------------------------------------------------------------
 # Small language model
 # ---------------------------------------------------------------------------
-MODEL_NAME = "llama3.2:3b"  # e.g. "phi3:mini" or "gemma3:4b"
+MODEL_NAME = "llama3.2:3b"  # e.g. "llama3.2:3b" or "gemma3:4b"
 
 # ---------------------------------------------------------------------------
 # News fetching
@@ -18,8 +18,8 @@ MAX_ARTICLES = 30  # target count of articles with full text per run (SLM + stor
 # OR-joined terms for the Google News query. Keep ~8–10 broad terms; very long
 # OR-chains weaken relevance. Multi-word terms are auto-quoted in fetch.
 FETCH_QUERY_TERMS = [
+    "narcotráfico",
     "cartel",
-    "narco",
     "sicario",
     "crimen organizado",
     "fentanilo",

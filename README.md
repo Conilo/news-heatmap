@@ -79,6 +79,8 @@ streamlit run src/dashboard.py --server.address 127.0.0.1
 
 Then open **http://127.0.0.1:8501** (not only `localhost`) so the browser and server agree on IPv4; a fully white page is often a stale tab, a zombie process on port 8501, or `localhost` resolving to IPv6 while the server listens on IPv4.
 
+The sidebar page **Label eval cases** exports curated rows for `tests/fixtures/slm_eval/cases.csv` (pytest `--slm-live` harness).
+
 **If the page stays blank:** free the port (`lsof -ti:8501 | xargs kill -9`), close old tabs, try a fresh incognito window, and capture logs with:
 
 ```bash
@@ -117,9 +119,9 @@ The Refresh pipeline **only appends** articles that got a non-empty `body`. Olde
 ## Output
 
 The dashboard shows:
-- **Choropleth map** of Mexico colored by incident count per state, with one color per criminal group
+- **Choropleth map** of Mexico colored by incident count per state
 - **Sidebar filters**: date range, group, crime type
-- **Article table** with title, extracted state/municipality, group, and crime type
+- **Article table** with title, classified state/municipality, group, and crime type
 
 ## Tests
 
@@ -127,6 +129,8 @@ The dashboard shows:
 pip install -r requirements-dev.txt
 pytest                # fast unit tests only
 pytest --live         # also runs the live Google News statistical test
+pytest tests/test_extract_slm_eval.py --slm-live   # Ollama regression on fixtures/slm_eval/cases.csv
 ```
 
 The `--live` test asserts that at least 90% of fetched articles are both crime-relevant and Mexico-relevant.
+The `--slm-live` test needs rows with hand-filled `expected_state` in `tests/fixtures/slm_eval/cases.csv` (see that folder’s README).

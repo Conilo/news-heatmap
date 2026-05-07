@@ -122,7 +122,7 @@ def _build_event_row(event_id: str, group_df: pd.DataFrame) -> dict:
 
     return {
         "event_id": event_id,
-        "state": _most_common(group_df["state"].apply(_normalize_state)),
+        "state": _most_common(group_df["state"].apply(_normalize_state), exclude=_NON_GEO),
         "municipality": _most_common(group_df["municipality"], exclude={"Desconocido"}),
         "group": _most_common(group_df["group"].apply(normalize_group), exclude={"Desconocido"}),
         "event_type": _most_common(group_df["event_type"]),
@@ -410,18 +410,43 @@ def cluster_articles(
     if "event_id" not in articles.columns:
         articles["event_id"] = ""
 
-    # Stage 1: assign a UUID to each unique (state, group, date_bucket) key
+    # Stage 1: assign a UUID to each unique (state, group, date_bucket) key.
+    #
+    # Stability: reuse existing event_ids so callers can track events across
+    # re-runs.  BUT only reuse an event_id for a key when that id is not also
+    # claimed by a *different* key — which happens when a previous bad cluster
+    # merged distinct events and the bad event_id then got written to the CSV.
+    # In that case the conflicting key gets a fresh UUID instead.
+    #
+    # Step A: gather the majority event_id for each cluster key.
+    from collections import Counter as _Counter
+    key_eid_candidates: dict[tuple, list[str]] = {}
+    for idx, row in articles.iterrows():
+        key = _cluster_key(row)
+        existing = str(articles.loc[idx, "event_id"] or "").strip()
+        if existing and not pd.isna(articles.loc[idx, "event_id"]):
+            key_eid_candidates.setdefault(key, []).append(existing)
+
+    # Step B: detect which event_ids are claimed by more than one distinct key
+    #         (sign of a previously over-merged cluster).
+    eid_to_keys: dict[str, set] = {}
+    for key, eids in key_eid_candidates.items():
+        majority_eid = _Counter(eids).most_common(1)[0][0]
+        eid_to_keys.setdefault(majority_eid, set()).add(key)
+    contested_eids = {eid for eid, keys in eid_to_keys.items() if len(keys) > 1}
+
+    # Step C: build key_to_event, generating a fresh UUID for contested ids.
     key_to_event: dict[tuple, str] = {}
     for idx, row in articles.iterrows():
         key = _cluster_key(row)
         if key not in key_to_event:
-            existing = articles.loc[idx, "event_id"]
-            # NaN is truthy in Python (it's a non-zero float), so a plain
-            # truthy check would propagate NaN here — guard explicitly.
-            if pd.isna(existing) or not str(existing).strip():
-                key_to_event[key] = str(uuid.uuid4())
-            else:
-                key_to_event[key] = str(existing)
+            candidates = key_eid_candidates.get(key, [])
+            if candidates:
+                majority_eid = _Counter(candidates).most_common(1)[0][0]
+                if majority_eid not in contested_eids:
+                    key_to_event[key] = majority_eid
+                    continue
+            key_to_event[key] = str(uuid.uuid4())
 
     # Stage 1b: absorb Desconocido-state clusters into unambiguous state clusters
     key_to_event = _absorb_desconocido(key_to_event)
