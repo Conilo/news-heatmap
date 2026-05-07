@@ -16,47 +16,111 @@ import ollama
 
 import config
 
+VALID_STATES = config.VALID_STATES
+VALID_EVENT_TYPES = config.VALID_EVENT_TYPES
+
+_VALID_STATES_SET = frozenset(VALID_STATES)
+_VALID_EVENT_TYPES_SET = frozenset(VALID_EVENT_TYPES)
+
+# JSON schema for Ollama's constrained-decoding format parameter.
+# Enum fields constrain token sampling at generation time — the model
+# physically cannot produce a value outside these lists.
+_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "state":        {"type": "string", "enum": VALID_STATES},
+        "municipality": {"type": "string"},
+        "group":        {"type": "string"},
+        "event_type":   {"type": "string", "enum": VALID_EVENT_TYPES},
+        "confidence":   {"type": "number", "minimum": 0.0, "maximum": 1.0},
+    },
+    "required": ["state", "municipality", "group", "event_type", "confidence"],
+}
+
 # ---------------------------------------------------------------------------
 # Prompt
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
 You are a structured data extractor specialized in Mexican crime and cartel news.
-Given a news article title and the article body text, extract the following fields
+Given a news article title and the article body text, analyze the topic including
+"what", "where", "when" and "who" and then extract the following fields
 as valid JSON — no markdown fences, no explanation, nothing else.
 
 === FIELDS ===
 
 state:
-  One of the 32 Mexican state names in Spanish (e.g. "Sinaloa", "Jalisco", "Tamaulipas"), OR:
-  - "Internacional" — the event clearly happened outside Mexico (e.g. arrests or trials abroad).
+  One of the 32 Mexican state names in which the event happened:
+  "Sinaloa", "Jalisco", "Tamaulipas", "Chihuahua", "Durango", "Guanajuato",
+  "Guerrero", "Hidalgo", "Michoacán", "Morelos", "Nayarit", "Nuevo León", "Oaxaca",
+  "Puebla", "Querétaro", "Quintana Roo", "San Luis Potosí", "Sonora", "Tabasco",
+  "Tlaxcala", "Veracruz", "Yucatán", "Zacatecas", "Ciudad de México", "Estado de México",
+  "Campeche", "Baja California", "Baja California Sur", "Aguascalientes", "Chiapas",
+  "Colima", or:
+  - "Internacional" when the event clearly happened outside Mexico (e.g. arrests or
+    trials abroad).
   - "Desconocido" — no usable geographic clue in the article (even indirect).
 
   Infer the state from explicit place names when you can. If your best answer for state
   is "Desconocido" but you did extract a municipality, put that city/municipality in
-  the municipality field anyway: deterministic city→state matching uses only that field
-  to fill state and never scans the raw article text.
+  the municipality field.
 
   Do NOT infer state from the cartel's home territory alone (e.g. CJNG with no location
-  stays "Desconocido", not "Jalisco").
+  stays "Desconocido", not "Jalisco") or from the article's publication place.
+
+  INVALID values: "México" (the country), "EEUU", "USA", "Estados Unidos", 
+  "EE.UU.", "United States". Events in the US or abroad → "Internacional".
+  Do not confuse "México" (the country) with "Estado de México" (the state).
 
 municipality:
-  City or municipality name in Spanish, or "Desconocido".
+  City or municipality name or "Desconocido". 
+
+  INVALID values: State names
 
 group:
-  Name of the criminal organization (e.g. "CJNG", "Cártel de Sinaloa", "Los Zetas"), or "Desconocido".
+  Name of the criminal organization (e.g. "CJNG", "Cártel de Sinaloa", "Los Zetas"),
+  or "Desconocido".
 
 event_type:
-  One of: homicidio, desaparición, extorsión, narcotráfico, enfrentamiento,
-          secuestro, robo, amenaza, corrupción, disturbio, captura, detención, otro
+  One of: "homicidio", "desaparición", "extorsión", "narcotráfico", "enfrentamiento", "muerte",
+          "secuestro", "robo", "incautación", "redada", "corrupción", "disturbio", "detención",
+          or "otro".
 
-  Use `captura` or `detención` when the story centers on authorities capturing
-  or detaining suspects or leaders (Marina, Guardia Nacional, fiscalía, operativos).
-  Prefer the word that matches the headline; both are valid for arrest/capture news.
+  PRIORITY RULES (apply in order):
 
-  Use `disturbio` for narcobloqueos, quema de vehículos o negocios, motines,
-  y disturbios públicos relacionados con grupos criminales (típicamente tras
-  la captura de un líder).
+  1. "disturbio" — headline contains "incendian", "queman", "bloqueos", "narcobloqueo",
+     "motín": use "disturbio" regardles of what the body says. The body may describe
+     a prior arrest that triggered the disturbio — that does not change the classification.
+
+  2. "detención" — headline contains any of: "detienen", "detuvo", "detenidos", "detención",
+     "capturan", "capturó", "captura", "capturado", "arrestan", "arrestados", "aprehenden",
+     "vinculan a proceso". Use "detención" even when the capture is for a past crime
+     (e.g. "Cuatro detenidos por homicidio" → "detención", NOT "homicidio").
+     Also use when the headline describes an arrest as the main event, even if the body
+     also describes the crime that prompted it.
+
+  3. "incautación" — headline contains "decomisan", "aseguran", "incautan" and a drug/weapon
+     quantity. Use "incautación" even when arrests are also mentioned.
+
+  4. "narcotráfico" — article describes drug trafficking operations, networks, or supply
+     chains; or reports a government indictment, formal accusation, sanction, or extradition
+     request specifically for drug trafficking crimes (including officials or politicians
+     accused of coordinating with cartels to traffic drugs).
+     Use "narcotráfico" even when the accused is a public official — the trafficking charge
+     is the event, not the corruption.
+     Do NOT use for: diplomatic or political analysis about the *impact* of narco accusations
+     on a government or politician (→ "otro"); public opinion surveys about security or drugs
+     (→ "otro"); or articles that only mention cartels in passing without describing a
+     specific trafficking operation or legal action.
+
+  5. "muerte" — headline says "fallece", "muere" or "muerto".
+
+  6. "otro" — article is a biographical profile, an InSight Crime entry,
+     a narcocorrido or rap/music cultural analysis, a political party statement, a
+     retrospective with no specific current criminal event, a public opinion survey about
+     security or drugs, or editorial/political analysis about the diplomatic impact of
+     narco policy. Use "otro" even when the word "narcotráfico" appears in the headline,
+     if the article does not report a specific ongoing operation or legal action.
 
 confidence:
   Float 0.0–1.0 reflecting your certainty across all fields.
@@ -64,28 +128,46 @@ confidence:
 === EXAMPLES ===
 
 Input:
-  Title: La Marina detiene en Nayarit al Jardinero, líder del CJNG
-  Description: La Marina detiene en Nayarit al Jardinero, líder del CJNG
+  Title: Incendian autos y negocios en Nayarit tras captura de "El Jardinero", posible sucesor del CJNG
+  Article: Fuerzas de la Marina detuvieron a Audias Flores Silva en Nayarit. Tras la captura, grupos criminales quemaron vehículos y negocios en varios municipios del estado.
 Output:
-{"state": "Nayarit", "municipality": "Desconocido", "group": "CJNG", "event_type": "detención", "confidence": 0.95}
+{"state": "Nayarit", "municipality": "Desconocido", "group": "CJNG", "event_type": "disturbio", "confidence": 0.93}
 
 Input:
-  Title: Caen 37 integrantes de la Mafia Mexicana ligados al Cártel de Sinaloa tras redada en California
-  Description: Caen 37 integrantes de la Mafia Mexicana ligados al Cártel de Sinaloa tras redada en California
+  Title: Golpe al Narco en Chiapas: Decomisan casi Una Tonelada de Cocaína y Detienen a 6
+  Article: Miembros de las Fuerzas de Seguridad aseguraron cerca de una tonelada de cocaína y detuvieron a seis extranjeros en Chiapas.
 Output:
-{"state": "Internacional", "municipality": "California", "group": "Cártel de Sinaloa", "event_type": "narcotráfico", "confidence": 0.97}
+{"state": "Chiapas", "municipality": "Desconocido", "group": "Desconocido", "event_type": "incautación", "confidence": 0.92}
 
 Input:
-  Title: Detienen en México a narco líder del Cártel Jalisco Nueva Generación
-  Description: Detienen en México a narco líder del Cártel Jalisco Nueva Generación
+  Title: Alejandro Treviño Morales, alias 'El Z42' - InSight Crime
+  Article: Alejandro Treviño Morales era miembro de Los Zetas y hermano del exlíder del cártel. Este perfil resume su trayectoria criminal.
 Output:
-{"state": "Desconocido", "municipality": "Desconocido", "group": "CJNG", "event_type": "detención", "confidence": 0.70}
+{"state": "Tamaulipas", "municipality": "Desconocido", "group": "Los Zetas", "event_type": "otro", "confidence": 0.95}
 
 Input:
-  Title: Incendian autos y negocios en Nayarit tras captura de "El Jardinero", posible sucesor del "Mencho" en el CJNG
-  Description: Tras la detención de "El Jardinero", presuntos integrantes del CJNG quemaron vehículos y comercios en varios municipios de Nayarit, generando narcobloqueos.
+  Title: Cuatro detenidos por brutal homicidio de una familia en la Ciudad de México
+  Article: Autoridades de Ciudad de México confirmaron la detención de cuatro presuntos responsables del asesinato de cuatro integrantes de una familia en el norte de la capital.
 Output:
-{"state": "Nayarit", "municipality": "Desconocido", "group": "CJNG", "event_type": "disturbio", "confidence": 0.92}
+{"state": "Ciudad de México", "municipality": "Desconocido", "group": "Desconocido", "event_type": "detención", "confidence": 0.91}
+
+Input:
+  Title: Fiscalía de Nueva York acusa formalmente al gobernador de Sinaloa y a otros nueve funcionarios por vínculos con el narco
+  Article: El gobernador de Sinaloa, Rubén Rocha Moya, fue acusado formalmente por la fiscalía federal de Nueva York de facilitar el tráfico de drogas del Cártel de Sinaloa hacia Estados Unidos junto con otros nueve funcionarios estatales.
+Output:
+{"state": "Sinaloa", "municipality": "Desconocido", "group": "Cártel de Sinaloa", "event_type": "narcotráfico", "confidence": 0.92}
+
+Input:
+  Title: EE.UU. y México sancionan a personas y empresas que proveen precursores químicos al Cartel de Sinaloa
+  Article: El Departamento del Tesoro de EE.UU. sancionó a una red global de proveedores de precursores químicos que abastecen laboratorios de fentanilo del Cártel de Sinaloa en México.
+Output:
+{"state": "Internacional", "municipality": "Desconocido", "group": "Cártel de Sinaloa", "event_type": "narcotráfico", "confidence": 0.90}
+
+Input:
+  Title: Inseguridad y narco preocupan a mexicanos a 50 días del mundial
+  Article: El 56% de los mexicanos se muestra preocupado por el desarrollo del torneo debido al narcotráfico, según una encuesta.
+Output:
+{"state": "Desconocido", "municipality": "Desconocido", "group": "Desconocido", "event_type": "otro", "confidence": 0.88}
 """
 
 _FALLBACK: dict[str, Any] = {
@@ -121,20 +203,20 @@ def _infer_state_from_municipality(municipality: str) -> str | None:
     ``STATE_NAME_MAP`` (accent-folded; substring match inside the municipality only).
     """
     raw = (municipality or "").strip()
-    if not raw or _geo_normalize(raw) == _geo_normalize("Desconocido"):
+    municipality_normalized = _geo_normalize(raw)
+    if not raw or municipality_normalized == _geo_normalize("Desconocido"):
         return None
 
-    mun = _geo_normalize(raw)
-    if mun in config.LOCATION_TO_STATE:
-        return config.LOCATION_TO_STATE[mun]
+    if municipality_normalized in config.LOCATION_TO_STATE:
+        return config.LOCATION_TO_STATE[municipality_normalized]
 
     for loc_key, est in _LOCATION_MATCH_ORDER:
-        if loc_key in mun:
+        if loc_key in municipality_normalized:
             return est
 
     for phrase, est in _STATE_MATCH_ORDER:
         pn = _geo_normalize(phrase)
-        if pn in mun:
+        if pn in municipality_normalized:
             return est
 
     return None
@@ -170,7 +252,11 @@ def _parse_json_response(text: str) -> dict[str, Any]:
 
 
 def _validate_fields(data: dict[str, Any]) -> dict[str, Any]:
-    """Ensure all expected keys exist, filling missing ones from FALLBACK."""
+    """Ensure all expected keys exist, filling missing ones from FALLBACK.
+
+    Also guards enum fields against out-of-vocabulary values that can slip
+    through even with constrained decoding (e.g. accent/case mismatches).
+    """
     result = dict(_FALLBACK)
     for key in _FALLBACK:
         if key in data and data[key] not in (None, "", "null"):
@@ -181,6 +267,13 @@ def _validate_fields(data: dict[str, Any]) -> dict[str, Any]:
         result["confidence"] = max(0.0, min(1.0, result["confidence"]))
     except (TypeError, ValueError):
         result["confidence"] = 0.0
+    # Reject any value outside the allowed enums
+    if result["event_type"] not in _VALID_EVENT_TYPES_SET:
+        print(f"[extract] Invalid event_type {result['event_type']!r} — falling back to 'otro'")
+        result["event_type"] = "otro"
+    if result["state"] not in _VALID_STATES_SET:
+        print(f"[extract] Invalid state {result['state']!r} — falling back to 'Desconocido'")
+        result["state"] = "Desconocido"
     return result
 
 
@@ -200,10 +293,10 @@ def extract_article(article: dict[str, Any]) -> dict[str, Any]:
 
     extracted: dict[str, Any] = dict(_FALLBACK)
     if body:
+        body_truncated = body[:config.ARTICLE_BODY_MAX_CHARS_SLM]
         user_text = (
             f"Title: {article.get('title', '')}\n"
-            f"Description: {article.get('description', '')}\n"
-            f"Article: {body}"
+            f"Article: {body_truncated}"
         )
         try:
             response = ollama.chat(
@@ -212,6 +305,7 @@ def extract_article(article: dict[str, Any]) -> dict[str, Any]:
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_text},
                 ],
+                format=_OUTPUT_SCHEMA,
                 options={"temperature": 0.0},
             )
             raw_text = response["message"]["content"]

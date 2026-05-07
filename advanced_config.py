@@ -13,7 +13,7 @@ from user_config import MAX_ARTICLES
 GNEWS_RSS_MAX_ITEMS = max(MAX_ARTICLES * 4, 100)
 
 # Truncate article text for CSV and SLM context (newspaper3k download).
-ARTICLE_BODY_MAX_CHARS_SLM = 8000
+ARTICLE_BODY_MAX_CHARS_SLM = 2000
 
 # Delay between Google News URL decodes; 0 disables.
 GOOGLE_NEWS_DECODE_INTERVAL_SEC = 0.0
@@ -71,6 +71,25 @@ CSV_COLUMNS = [
     "confidence",
     "processed_at",
     "event_id",
+]
+
+# ---------------------------------------------------------------- SLM extraction
+# Allowed values for Ollama JSON-schema enums and post-parse validation.
+# ---------------------------------------------------------------------------
+VALID_STATES: list[str] = [
+    "Aguascalientes", "Baja California", "Baja California Sur", "Campeche",
+    "Chiapas", "Chihuahua", "Ciudad de México", "Coahuila", "Colima",
+    "Durango", "Estado de México", "Guanajuato", "Guerrero", "Hidalgo",
+    "Jalisco", "Michoacán", "Morelos", "Nayarit", "Nuevo León", "Oaxaca",
+    "Puebla", "Querétaro", "Quintana Roo", "San Luis Potosí", "Sinaloa",
+    "Sonora", "Tabasco", "Tamaulipas", "Tlaxcala", "Veracruz", "Yucatán",
+    "Zacatecas", "Internacional", "Desconocido",
+]
+
+VALID_EVENT_TYPES: list[str] = [
+    "homicidio", "desaparición", "extorsión", "narcotráfico", "enfrentamiento",
+    "muerte", "secuestro", "robo", "incautación", "redada", "corrupción",
+    "detención", "disturbio", "otro",
 ]
 
 # ---------------------------------------------------------------------------
@@ -285,7 +304,7 @@ GROUP_ALIASES: dict[str, str] = {
 }
 
 
-def _strip_accents(s: str) -> str:
+def strip_accents(s: str) -> str:
     return "".join(
         c for c in _unicodedata.normalize("NFD", s)
         if _unicodedata.category(c) != "Mn"
@@ -295,7 +314,7 @@ def _strip_accents(s: str) -> str:
 def _build_location_to_state() -> dict[str, str]:
     out: dict[str, str] = {}
     for place, est in _LOCATION_TO_STATE_ENTRIES:
-        k = _strip_accents(place).casefold().strip()
+        k = strip_accents(place).casefold().strip()
         out[k] = est
     return out
 
@@ -322,9 +341,9 @@ def normalize_group(name: str) -> str:
     if key in GROUP_ALIASES:
         return GROUP_ALIASES[key]
 
-    key_no_accent = _strip_accents(key)
+    key_no_accent = strip_accents(key)
     for alias_key, canonical in GROUP_ALIASES.items():
-        if _strip_accents(alias_key) == key_no_accent:
+        if strip_accents(alias_key) == key_no_accent:
             return canonical
 
     return cleaned

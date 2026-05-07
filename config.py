@@ -24,7 +24,10 @@ from advanced_config import (
     GROUP_ALIASES,
     LOCATION_TO_STATE,
     STATE_NAME_MAP,
+    VALID_EVENT_TYPES,
+    VALID_STATES,
     normalize_group,
+    strip_accents,
 )
 
 from user_config import (
@@ -57,5 +60,8 @@ __all__ = [
     "MAX_ARTICLES",
     "MODEL_NAME",
     "STATE_NAME_MAP",
+    "VALID_EVENT_TYPES",
+    "VALID_STATES",
     "normalize_group",
+    "strip_accents",
 ]
