@@ -146,6 +146,24 @@ def _reprocess_cached_articles() -> None:
     st.cache_data.clear()
 
 
+def _recluster_from_cache() -> None:
+    """Rebuild events.csv from articles.csv without re-running SLM extraction."""
+    from cluster import recompute_events
+
+    df = load()
+    if df.empty:
+        st.warning("No rows in articles.csv — nothing to cluster.")
+        return
+
+    with st.spinner("Clustering cached articles into events…"):
+        articles_out, events_out = recompute_events(use_slm=False)
+
+    n_art = len(articles_out)
+    n_evt = len(events_out)
+    st.success(f"Re-clustered into {n_evt} events from {n_art} articles.")
+    st.cache_data.clear()
+
+
 # ---------------------------------------------------------------------------
 # Article card renderer
 # ---------------------------------------------------------------------------
@@ -491,7 +509,7 @@ def _render_trend_charts(events_df: pd.DataFrame) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    st.title("🗺️ Mexico Cartel Heatmap")
+    st.title("Crimen Organizado Heatmap")
     st.caption(
         "Powered by Google News + Ollama SLM · "
         f"Model: `{config.MODEL_NAME}` · "
@@ -512,6 +530,14 @@ def main() -> None:
             help="Re-runs Ollama on each row in articles.csv (articles without body text keep fallback extracted fields). Rebuilds events.csv afterward.",
         ):
             _reprocess_cached_articles()
+            st.rerun()
+
+        if st.button(
+            "📊 Re-cluster events",
+            use_container_width=True,
+            help="Rebuilds events from articles.csv using current classifications. Does not call Ollama/SLM.",
+        ):
+            _recluster_from_cache()
             st.rerun()
 
         st.divider()

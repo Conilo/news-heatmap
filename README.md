@@ -1,5 +1,7 @@
 # News Analyzer — Mexico Cartel Heatmap
 
+![Crimen Organizado Heatmap — Streamlit dashboard: metrics and Mexico choropleth by event count](docs/dashboard-screenshot.png)
+
 A local pipeline that fetches Google News, **decodes each `news.google.com` link**, downloads full article text with **newspaper3k**, and **returns only items where the body was successfully retrieved** (up to `MAX_ARTICLES`). It runs a Small Language Model (Ollama) on those rows, extracts structured fields, clusters events, and renders an interactive state-level heatmap in Streamlit.
 
 ## Architecture
