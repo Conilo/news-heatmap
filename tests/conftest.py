@@ -1,4 +1,4 @@
-"""Pytest configuration: opt-in `--live` flag for tests that hit the network."""
+"""Pytest configuration: opt-in flags for network and local Ollama tests."""
 
 from __future__ import annotations
 
@@ -25,6 +25,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="run tests that hit the live Google News API",
     )
+    parser.addoption(
+        "--slm-live",
+        action="store_true",
+        default=False,
+        help="run tests that call the local Ollama extractor (slow)",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -33,6 +39,10 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     config.addinivalue_line(
         "markers", "flaky: retry on failure (handled by pytest-rerunfailures)"
+    )
+    config.addinivalue_line(
+        "markers",
+        "slm_live: requires local Ollama and config.MODEL_NAME (skipped unless --slm-live)",
     )
 
 
@@ -44,3 +54,9 @@ def pytest_collection_modifyitems(
         for item in items:
             if "live" in item.keywords:
                 item.add_marker(skip_live)
+
+    skip_slm_live = pytest.mark.skip(reason="needs --slm-live")
+    if not config.getoption("--slm-live"):
+        for item in items:
+            if "slm_live" in item.keywords:
+                item.add_marker(skip_slm_live)

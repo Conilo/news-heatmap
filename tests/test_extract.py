@@ -102,6 +102,44 @@ def test_validate_fields_clamps_and_coerces_confidence(raw, expected):
     assert result["confidence"] == expected
 
 
+@pytest.mark.parametrize("bad_type", [
+    "multihomicidio",
+    "feminicidio",
+    "narcocorrupción",
+    "colaboración con el narcotráfico",
+    "unknown_category",
+])
+def test_validate_fields_rejects_invalid_event_type(bad_type, capsys):
+    result = extract._validate_fields({"event_type": bad_type, "confidence": 0.9})
+    assert result["event_type"] == "otro"
+    assert bad_type in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("bad_state", [
+    "EEUU",
+    "EE.UU.",
+    "Estados Unidos",
+    "México",
+    "USA",
+])
+def test_validate_fields_rejects_invalid_state(bad_state, capsys):
+    result = extract._validate_fields({"state": bad_state, "confidence": 0.5})
+    assert result["state"] == "Desconocido"
+    assert bad_state in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("valid_type", extract.VALID_EVENT_TYPES)
+def test_validate_fields_accepts_all_valid_event_types(valid_type):
+    result = extract._validate_fields({"event_type": valid_type, "confidence": 0.8})
+    assert result["event_type"] == valid_type
+
+
+@pytest.mark.parametrize("valid_state", extract.VALID_STATES)
+def test_validate_fields_accepts_all_valid_states(valid_state):
+    result = extract._validate_fields({"state": valid_state, "confidence": 0.8})
+    assert result["state"] == valid_state
+
+
 # ---------------------------------------------------------------------------
 # Group C — extract_article() (with stubbed ollama.chat)
 # ---------------------------------------------------------------------------
@@ -298,6 +336,25 @@ def test_extract_articles_skips_urls_in_skip_set(monkeypatch):
     assert all("b" != line.split("Title: ")[1].split("\n")[0] for line in calls)
 
 
+def test_extract_article_passes_format_schema_to_ollama(monkeypatch):
+    """extract_article must forward _OUTPUT_SCHEMA as the format kwarg to ollama.chat."""
+    captured: list[dict] = []
+
+    def fake_chat(*args, **kwargs):
+        captured.append(kwargs)
+        return _ollama_response(
+            '{"state": "Sinaloa", "municipality": "Culiacán", "group": "CDS", '
+            '"event_type": "homicidio", "confidence": 0.9}'
+        )
+
+    monkeypatch.setattr(extract.ollama, "chat", fake_chat)
+    extract.extract_article(_sample_article())
+
+    assert captured, "ollama.chat was never called"
+    assert "format" in captured[0], "format kwarg not passed to ollama.chat"
+    assert captured[0]["format"] is extract._OUTPUT_SCHEMA
+
+
 def test_extract_articles_defaults_skip_urls_to_empty_set(monkeypatch):
     call_count = {"n": 0}
 
@@ -320,3 +377,54 @@ def test_extract_articles_defaults_skip_urls_to_empty_set(monkeypatch):
     assert len(results) == 2
     assert call_count["n"] == 2
     assert [r["url"] for r in results] == ["https://a.com", "https://b.com"]
+
+
+# ---------------------------------------------------------------------------
+# Group E — VALID_STATES / VALID_EVENT_TYPES constants and _OUTPUT_SCHEMA
+# ---------------------------------------------------------------------------
+
+def test_valid_event_types_count():
+    assert len(extract.VALID_EVENT_TYPES) == 14
+
+
+def test_valid_states_count():
+    # 31 states + "Ciudad de México" + "Internacional" + "Desconocido" = 34
+    assert len(extract.VALID_STATES) == 34
+
+
+def test_valid_states_includes_special_values():
+    assert "Internacional" in extract._VALID_STATES_SET
+    assert "Desconocido" in extract._VALID_STATES_SET
+
+
+def test_valid_states_excludes_invalid_country_names():
+    for bad in ("México", "EEUU", "EE.UU.", "Estados Unidos", "USA", "United States"):
+        assert bad not in extract._VALID_STATES_SET, f"{bad!r} should not be a valid state"
+
+
+def test_valid_event_types_set_matches_list():
+    assert extract._VALID_EVENT_TYPES_SET == set(extract.VALID_EVENT_TYPES)
+
+
+def test_valid_states_set_matches_list():
+    assert extract._VALID_STATES_SET == set(extract.VALID_STATES)
+
+
+def test_output_schema_enum_matches_valid_states():
+    assert extract._OUTPUT_SCHEMA["properties"]["state"]["enum"] == extract.VALID_STATES
+
+
+def test_output_schema_enum_matches_valid_event_types():
+    assert extract._OUTPUT_SCHEMA["properties"]["event_type"]["enum"] == extract.VALID_EVENT_TYPES
+
+
+def test_output_schema_has_all_required_fields():
+    assert set(extract._OUTPUT_SCHEMA["required"]) == {
+        "state", "municipality", "group", "event_type", "confidence"
+    }
+
+
+def test_output_schema_confidence_bounds():
+    conf = extract._OUTPUT_SCHEMA["properties"]["confidence"]
+    assert conf["minimum"] == 0.0
+    assert conf["maximum"] == 1.0
