@@ -133,8 +133,12 @@ The main dashboard shows:
 pip install -r requirements-dev.txt
 pytest                # fast unit tests only
 pytest --live         # also runs the live Google News statistical test
+pytest tests/test_extract_governor.py --slm-live   # Ollama governor-tier: 100% required
 pytest tests/test_extract_slm_eval.py --slm-live   # Ollama regression on fixtures/slm_eval/cases.csv
 ```
 
 The `--live` test asserts that at least 90% of fetched articles are both crime-relevant and Mexico-relevant.
-The `--slm-live` test needs rows with hand-filled `expected_state` in `tests/fixtures/slm_eval/cases.csv` (see that folder’s README). It **fails** if state accuracy on eligible rows falls below **95%** (`STATE_ACCURACY_FLOOR` in `tests/test_extract_slm_eval.py`).
+
+The **governor-tier** test (`test_extract_governor.py`) runs against `tests/fixtures/slm_eval/governor_cases.csv`: 16 hand-crafted cases where the correct `state` and `event_type` are unambiguous from the headline alone (explicit state name, exact priority-rule trigger keyword). Threshold is **100%** — a single miss means the extractor is broken, not merely imprecise. Run this after any prompt or model change before the full eval. See `tests/fixtures/slm_eval/README.md` for the case breakdown and how to add new cases.
+
+The `--slm-live` eval (`test_extract_slm_eval.py`) needs rows with hand-filled `expected_state` in `tests/fixtures/slm_eval/cases.csv` (see that folder’s README). It **fails** if state accuracy on eligible rows falls below **95%** — designed for hard, ambiguous cases where some model drift is tolerable.
