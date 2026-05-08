@@ -67,6 +67,26 @@ def _prep_events(events_df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _format_event_dates(first: pd.Timestamp, last: pd.Timestamp) -> str:
+    """d/m/y or start–end range (calendar dates in UTC)."""
+    def _dmy(ts: pd.Timestamp) -> str:
+        return ts.strftime("%d/%m/%Y")
+
+    if pd.isna(first) and pd.isna(last):
+        return "—"
+    if pd.isna(first):
+        lo = "?"
+    else:
+        lo = _dmy(first)
+    if pd.isna(last):
+        hi = "?"
+    else:
+        hi = _dmy(last)
+    if lo == hi:
+        return lo
+    return f"{lo} → {hi}"
+
+
 # ---------------------------------------------------------------------------
 # Pipeline runner
 # ---------------------------------------------------------------------------
@@ -382,16 +402,21 @@ def _render_state_detail(
     ].copy() if not articles_df.empty else pd.DataFrame()
 
     for _, ev in state_events_sorted.iterrows():
+        date_label = _format_event_dates(ev["first_seen"], ev["last_seen"])
+        head = f"[{ev['event_type'].upper()}]"
+        if date_label != "—":
+            head += f" [{date_label}]"
         label = (
-            f"[{ev['event_type'].upper()}] {ev['canonical_title'][:80]} "
+            f"{head} {ev['canonical_title'][:80]} "
             f"— {ev['group']} "
             f"({ev['article_count']} art., conf {float(ev['confidence']):.2f})"
         )
         with st.expander(label):
-            ec1, ec2, ec3 = st.columns(3)
+            ec1, ec2, ec3, ec4 = st.columns(4)
             ec1.metric("Artículos", int(ev["article_count"]))
             ec2.metric("Fuentes únicas", int(ev["unique_sources"]))
             ec3.metric("Confianza", f"{float(ev['confidence']):.2f}")
+            ec4.metric("Fechas (artículos)", date_label)
 
             if not state_articles.empty and "event_id" in state_articles.columns:
                 ev_articles = state_articles[
