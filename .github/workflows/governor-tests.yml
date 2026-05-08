@@ -1,0 +1,52 @@
+name: Governor SLM Tests
+
+on:
+  pull_request:
+    paths:
+      - src/extract.py
+
+jobs:
+  governor-tests:
+    name: Governor SLM Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Read model name from user_config.py
+        run: |
+          echo "OLLAMA_MODEL=$(python -c "
+          import re, pathlib
+          m = pathlib.Path('user_config.py').read_text()
+          print(re.search(r'MODEL_NAME\s*=\s*[\"\'](.*?)[\"\']\s', m).group(1))
+          ")" >> $GITHUB_ENV
+
+      - name: Cache Ollama model
+        uses: actions/cache@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-${{ env.OLLAMA_MODEL }}
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.ai/install.sh | sh
+
+      - name: Start Ollama server
+        run: |
+          ollama serve &
+          sleep 5
+
+      - name: Pull model (no-op on cache hit)
+        run: ollama pull $OLLAMA_MODEL
+
+      - name: Run governor tests
+        run: pytest tests/test_extract_governor.py --slm-live
