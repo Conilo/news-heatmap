@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -424,6 +425,7 @@ def _stage2_merge(
     articles: pd.DataFrame,
     key_to_event: dict[tuple, str],
     use_slm: bool = True,
+    slm_progress: Callable[[int, int], None] | None = None,
 ) -> dict[tuple, str]:
     """
     For articles whose Stage-1 key differs only in state but share
@@ -446,7 +448,19 @@ def _stage2_merge(
     # Group by (group, bucket) to find cross-key candidates
     merge_map: dict[str, str] = {}  # old_event_id → new_event_id (canonical)
 
-    for _, bucket_group in articles.groupby(["_group_norm", "_bucket"]):
+    groups = list(articles.groupby(["_group_norm", "_bucket"]))
+    total_pairs = 0
+    for _, bucket_group in groups:
+        event_ids = bucket_group["_event_id"].unique()
+        n = len(event_ids)
+        if n > 1:
+            total_pairs += n * (n - 1) // 2
+
+    done_pairs = 0
+    if slm_progress is not None:
+        slm_progress(done_pairs, total_pairs)
+
+    for _, bucket_group in groups:
         event_ids = bucket_group["_event_id"].unique()
         if len(event_ids) <= 1:
             continue
@@ -457,6 +471,11 @@ def _stage2_merge(
                 # Resolve through any already-established merges
                 canon_a = merge_map.get(eid_a, eid_a)
                 canon_b = merge_map.get(eid_b, eid_b)
+
+                done_pairs += 1
+                if slm_progress is not None:
+                    slm_progress(done_pairs, total_pairs)
+
                 if canon_a == canon_b:
                     continue
 
@@ -492,9 +511,13 @@ def _stage2_merge(
 def cluster_articles(
     articles: pd.DataFrame,
     use_slm: bool = False,
+    progress_callback: Callable[[float, str], None] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Cluster a DataFrame of articles into events.
+
+    Optional ``progress_callback`` receives ``(ratio_0_to_1_within_clustering, message)``
+    for UI feedback (e.g. Streamlit progress).
 
     Returns:
         articles_df  — original columns + 'event_id'
@@ -504,6 +527,10 @@ def cluster_articles(
         return articles.copy(), pd.DataFrame(columns=config.EVENTS_CSV_COLUMNS)
 
     articles = articles.copy()
+
+    def _p(ratio: float, msg: str) -> None:
+        if progress_callback:
+            progress_callback(ratio, msg)
 
     # Ensure event_id column exists
     if "event_id" not in articles.columns:
@@ -517,6 +544,8 @@ def cluster_articles(
     # merged distinct events and the bad event_id then got written to the CSV.
     # In that case the conflicting key gets a fresh UUID instead.
     #
+    _p(0.02, "Assigning cluster keys…")
+
     # Step A: gather the majority event_id for each cluster key.
     from collections import Counter as _Counter
     key_eid_candidates: dict[tuple, list[str]] = {}
@@ -556,9 +585,26 @@ def cluster_articles(
     # Stage 1d: adjacent-bucket merge for same-state same-group clusters
     key_to_event = _adjacent_bucket_merge(articles, key_to_event)
 
+    _p(0.22, "Rule-based merges complete…")
+
     # Stage 2 (optional SLM disambiguation)
+    def _slm_prog(done: int, total: int) -> None:
+        if total == 0:
+            _p(0.82, "SLM disambiguation: no candidate pairs")
+            return
+        _p(
+            0.26 + (done / total) * 0.58,
+            f"SLM disambiguation ({done}/{total})…",
+        )
+
     if use_slm:
-        key_to_event = _stage2_merge(articles, key_to_event, use_slm=True)
+        key_to_event = _stage2_merge(
+            articles, key_to_event, use_slm=True, slm_progress=_slm_prog
+        )
+    else:
+        _p(0.82, "Skipping SLM disambiguation…")
+
+    _p(0.88, "Building event list…")
 
     # Assign event_id back to articles
     articles["event_id"] = articles.apply(
@@ -572,10 +618,15 @@ def cluster_articles(
 
     events_df = pd.DataFrame(event_rows, columns=config.EVENTS_CSV_COLUMNS)
 
+    _p(0.99, "Done clustering")
+
     return articles[config.CSV_COLUMNS], events_df
 
 
-def recompute_events(use_slm: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
+def recompute_events(
+    use_slm: bool = False,
+    progress_callback: Callable[[float, str], None] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Reload articles.csv, re-run clustering from scratch, save both CSVs.
 
@@ -584,13 +635,33 @@ def recompute_events(use_slm: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]
     articles = load()
     if articles.empty:
         print("[cluster] No articles to cluster.")
+        if progress_callback:
+            progress_callback(1.0, "No articles to cluster")
         return articles, pd.DataFrame(columns=config.EVENTS_CSV_COLUMNS)
 
+    if progress_callback:
+        progress_callback(0.01, f"Loaded {len(articles)} articles…")
+
     print(f"[cluster] Clustering {len(articles)} articles (SLM={use_slm})…")
-    articles_out, events_out = cluster_articles(articles, use_slm=use_slm)
+
+    def _cluster_progress(ratio: float, msg: str) -> None:
+        if progress_callback:
+            progress_callback(0.02 + ratio * 0.91, msg)
+
+    articles_out, events_out = cluster_articles(
+        articles,
+        use_slm=use_slm,
+        progress_callback=_cluster_progress if progress_callback else None,
+    )
+
+    if progress_callback:
+        progress_callback(0.94, "Saving articles and events…")
 
     save(articles_out)
     save_events(events_out)
+
+    if progress_callback:
+        progress_callback(1.0, "Saved")
 
     n_events = len(events_out)
     n_articles = len(articles_out)
