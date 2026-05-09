@@ -175,8 +175,18 @@ def _recluster_from_cache() -> None:
         st.warning("No rows in articles.csv — nothing to cluster.")
         return
 
-    with st.spinner("Clustering cached articles into events…"):
-        articles_out, events_out = recompute_events(use_slm=False)
+    progress = st.progress(0.0, text="Re-clustering…")
+
+    def _on_progress(ratio: float, msg: str) -> None:
+        progress.progress(min(1.0, max(0.0, ratio)), text=msg)
+
+    try:
+        articles_out, events_out = recompute_events(
+            use_slm=True,
+            progress_callback=_on_progress,
+        )
+    finally:
+        progress.empty()
 
     n_art = len(articles_out)
     n_evt = len(events_out)
@@ -345,7 +355,7 @@ def _render_state_detail(
             labels={"group": "Grupo", "eventos": "Eventos"},
         )
         fig_g.update_layout(height=300, margin={"t": 40, "b": 0, "l": 0, "r": 0})
-        st.plotly_chart(fig_g, use_container_width=True)
+        st.plotly_chart(fig_g, width="stretch")
 
         type_counts = state_events["event_type"].value_counts().reset_index()
         type_counts.columns = ["event_type", "count"]
@@ -354,7 +364,7 @@ def _render_state_detail(
             title="Tipos de evento",
         )
         fig_c.update_layout(height=280, margin={"t": 40, "b": 0, "l": 0, "r": 0})
-        st.plotly_chart(fig_c, use_container_width=True)
+        st.plotly_chart(fig_c, width="stretch")
 
     with col_right:
         muni_counts = (
@@ -373,7 +383,7 @@ def _render_state_detail(
                 labels={"municipality": "Municipio", "eventos": "Eventos"},
             )
             fig_m.update_layout(height=300, margin={"t": 40, "b": 0, "l": 0, "r": 0})
-            st.plotly_chart(fig_m, use_container_width=True)
+            st.plotly_chart(fig_m, width="stretch")
 
         trend = (
             state_events.copy()
@@ -390,7 +400,7 @@ def _render_state_detail(
                 labels={"date": "Fecha", "eventos": "Eventos"},
             )
             fig_t.update_layout(height=270, margin={"t": 40, "b": 0, "l": 0, "r": 0})
-            st.plotly_chart(fig_t, use_container_width=True)
+            st.plotly_chart(fig_t, width="stretch")
 
     # ---- Event list with expandable article sub-lists ----
     st.markdown("**Eventos registrados**")
@@ -466,7 +476,7 @@ def _render_trend_charts(events_df: pd.DataFrame) -> None:
                 labels={"date": "Fecha", "eventos": "Eventos"},
             )
             fig_trend.update_layout(height=320, margin={"t": 40, "b": 0, "l": 0, "r": 0})
-            st.plotly_chart(fig_trend, use_container_width=True)
+            st.plotly_chart(fig_trend, width="stretch")
 
     with col_right:
         if geo_events.empty:
@@ -486,7 +496,7 @@ def _render_trend_charts(events_df: pd.DataFrame) -> None:
                 labels={"state": "Estado", "eventos": "Eventos"},
             )
             fig_states.update_layout(height=320, margin={"t": 40, "b": 0, "l": 0, "r": 0})
-            st.plotly_chart(fig_states, use_container_width=True)
+            st.plotly_chart(fig_states, width="stretch")
 
     col_left2, col_right2 = st.columns(2)
 
@@ -507,7 +517,7 @@ def _render_trend_charts(events_df: pd.DataFrame) -> None:
                 labels={"group": "Grupo", "eventos": "Eventos"},
             )
             fig_groups.update_layout(height=300, margin={"t": 40, "b": 0, "l": 0, "r": 0})
-            st.plotly_chart(fig_groups, use_container_width=True)
+            st.plotly_chart(fig_groups, width="stretch")
 
     with col_right2:
         top_munis = (
@@ -526,7 +536,7 @@ def _render_trend_charts(events_df: pd.DataFrame) -> None:
                 labels={"municipality": "Municipio", "eventos": "Eventos"},
             )
             fig_munis.update_layout(height=300, margin={"t": 40, "b": 0, "l": 0, "r": 0})
-            st.plotly_chart(fig_munis, use_container_width=True)
+            st.plotly_chart(fig_munis, width="stretch")
 
 
 # ---------------------------------------------------------------------------
@@ -545,22 +555,25 @@ def main() -> None:
     with st.sidebar:
         st.header("Controls")
 
-        if st.button("🔄 Refresh (fetch + extract)", use_container_width=True):
+        if st.button("🔄 Refresh (fetch + extract)", width="stretch"):
             _run_pipeline()
             st.rerun()
 
         if st.button(
             "🔁 Re-process articles (SLM)",
-            use_container_width=True,
+            width="stretch",
             help="Re-runs Ollama on each row in articles.csv (articles without body text keep fallback extracted fields). Rebuilds events.csv afterward.",
         ):
             _reprocess_cached_articles()
             st.rerun()
 
         if st.button(
-            "📊 Re-cluster events",
-            use_container_width=True,
-            help="Rebuilds events from articles.csv using current classifications. Does not call Ollama/SLM.",
+            "📊 Re-cluster events (SLM Disambiguation)",
+            width="stretch",
+            help=(
+                "Rebuilds events from articles.csv using current classifications. "
+                "Runs SLM pairwise disambiguation for cross-state merge candidates (Ollama)."
+            ),
         ):
             _recluster_from_cache()
             st.rerun()
@@ -668,7 +681,7 @@ def main() -> None:
     fig_main = _build_map(ev)
     map_event = st.plotly_chart(
         fig_main,
-        use_container_width=True,
+        width="stretch",
         on_select="rerun",
         selection_mode="points",
         key="main_map",

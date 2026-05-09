@@ -194,7 +194,7 @@ def _render_buffer_table() -> None:
     with st.expander(f"Golden buffer preview ({len(st.session_state.golden_rows)} rows)", expanded=False):
         st.dataframe(
             pd.DataFrame(st.session_state.golden_rows)[EXPORT_COLS],
-            use_container_width=True,
+            width="stretch",
             height=min(420, 120 + 36 * len(st.session_state.golden_rows)),
         )
 
@@ -373,7 +373,7 @@ def main() -> None:
 
             notes = st.text_area("notes", height=72, placeholder="Optional notes")
 
-            submitted = st.form_submit_button("Add → golden buffer", use_container_width=True)
+            submitted = st.form_submit_button("Add → golden buffer", width="stretch")
 
     if submitted:
         if sel_st == "(custom)":
