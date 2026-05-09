@@ -200,11 +200,27 @@ def _absorb_desconocido(key_to_event: dict[tuple, str]) -> dict[tuple, str]:
 # ---------------------------------------------------------------------------
 
 def _jaccard_words(a: str, b: str) -> float:
-    """Word-level Jaccard similarity between two strings."""
+    """Word-level Jaccard similarity between two strings.
+
+    Punctuation is stripped from each token before comparison so that
+    "belleza," and "belleza" are treated as the same word.  This matters
+    because article titles in the CSV include inline punctuation (commas,
+    colons) and trailing source names (e.g. "… en Polanco - La Jornada").
+    """
+    import re
     sw = {"de", "del", "la", "el", "en", "al", "los", "las", "y", "a", "que",
           "un", "una", "con", "por", "su", "se", "es", "fue"}
-    wa = {w.lower() for w in a.split() if len(w) > 2 and w.lower() not in sw}
-    wb = {w.lower() for w in b.split() if len(w) > 2 and w.lower() not in sw}
+
+    def _tokens(s: str) -> set[str]:
+        tokens = set()
+        for w in s.split():
+            w = re.sub(r"[^\w]", "", w, flags=re.UNICODE).lower()
+            if len(w) > 2 and w not in sw:
+                tokens.add(w)
+        return tokens
+
+    wa = _tokens(a)
+    wb = _tokens(b)
     if not wa or not wb:
         return 0.0
     return len(wa & wb) / len(wa | wb)
@@ -273,6 +289,89 @@ def _title_similarity_merge(
                         f"{rep_title.get(drop,'')[:50]} → "
                         f"{rep_title.get(keep,'')[:50]}"
                     )
+
+    if not merge_map:
+        return key_to_event
+
+    def _resolve(eid: str) -> str:
+        seen: set[str] = set()
+        while eid in merge_map and eid not in seen:
+            seen.add(eid)
+            eid = merge_map[eid]
+        return eid
+
+    return {k: _resolve(v) for k, v in key_to_event.items()}
+
+
+# ---------------------------------------------------------------------------
+# Stage 1d — Adjacent-bucket merge for same-state same-group clusters
+# ---------------------------------------------------------------------------
+
+_ADJACENT_BUCKET_JACCARD_THRESHOLD = 0.10
+
+
+def _adjacent_bucket_merge(
+    articles: pd.DataFrame,
+    key_to_event: dict[tuple, str],
+) -> dict[tuple, str]:
+    """
+    For clusters sharing the same (state, group) but landing in consecutive
+    date buckets (bucket_n and bucket_n+1), merge them if their representative
+    title Jaccard similarity >= _ADJACENT_BUCKET_JACCARD_THRESHOLD.
+
+    Stage 1 never compares across buckets, so a story that straddles a 5-day
+    boundary (e.g. published Apr 21 and Apr 22) produces two separate events
+    even when both have the same state and group.  The lower threshold (0.10
+    vs Stage 1c's 0.45) is safe here because we additionally require the same
+    state — a stricter pre-condition than the cross-state Stage 1c merge.
+
+    Only non-NON_GEO states are considered.  Desconocido/Internacional state
+    clusters are too ambiguous to merge across buckets on title alone.
+    """
+    from collections import defaultdict
+
+    # Build representative title and size per event_id
+    articles = articles.copy()
+    articles["_key"] = articles.apply(_cluster_key, axis=1)
+    articles["_event_id"] = articles["_key"].map(key_to_event)
+
+    rep_title: dict[str, str] = {}
+    event_size: dict[str, int] = {}
+    for eid, grp in articles.groupby("_event_id"):
+        confs = pd.to_numeric(grp["confidence"], errors="coerce")
+        best = confs.idxmax() if not confs.dropna().empty else grp.index[0]
+        rep_title[str(eid)] = str(grp.loc[best, "title"])
+        event_size[str(eid)] = len(grp)
+
+    # Map (state, group) → {bucket: event_id}
+    # Each non-NON_GEO (state, group, bucket) key is unique, so one event_id per bucket.
+    state_group_buckets: dict[tuple, dict[int, str]] = defaultdict(dict)
+    for key, eid in key_to_event.items():
+        state, group, bucket = _state_group_bucket(key)
+        if state in _NON_GEO:
+            continue
+        state_group_buckets[(state, group)][bucket] = eid
+
+    merge_map: dict[str, str] = {}
+
+    for (state, group), bucket_map in state_group_buckets.items():
+        for b in sorted(bucket_map):
+            if b + 1 not in bucket_map:
+                continue
+            eid_a = merge_map.get(bucket_map[b], bucket_map[b])
+            eid_b = merge_map.get(bucket_map[b + 1], bucket_map[b + 1])
+            if eid_a == eid_b:
+                continue
+            sim = _jaccard_words(rep_title.get(eid_a, ""), rep_title.get(eid_b, ""))
+            if sim >= _ADJACENT_BUCKET_JACCARD_THRESHOLD:
+                keep = eid_a if event_size.get(eid_a, 0) >= event_size.get(eid_b, 0) else eid_b
+                drop = eid_b if keep == eid_a else eid_a
+                merge_map[drop] = keep
+                print(
+                    f"[cluster] Adjacent-bucket merge ({sim:.2f}): "
+                    f"{rep_title.get(drop, '')[:50]} → "
+                    f"{rep_title.get(keep, '')[:50]}"
+                )
 
     if not merge_map:
         return key_to_event
@@ -453,6 +552,9 @@ def cluster_articles(
 
     # Stage 1c: title-similarity merge for cross-state clusters (same group+bucket)
     key_to_event = _title_similarity_merge(articles, key_to_event)
+
+    # Stage 1d: adjacent-bucket merge for same-state same-group clusters
+    key_to_event = _adjacent_bucket_merge(articles, key_to_event)
 
     # Stage 2 (optional SLM disambiguation)
     if use_slm:

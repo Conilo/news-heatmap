@@ -136,14 +136,27 @@ def test_jaccard_words_stopwords_excluded():
     assert sim == pytest.approx(1 / 3)
 
 
-def test_jaccard_words_belleza_headlines_below_threshold():
-    # The two ex-reina-de-belleza headline styles share only "belleza",
-    # giving Jaccard ≈ 0.056 — well below the 0.45 merge threshold.
+def test_jaccard_words_punctuation_stripped():
+    # Without stripping, "belleza," ≠ "belleza" and the real CSV titles
+    # (which include inline commas/colons and trailing " - Source Name")
+    # produce Jaccard = 0.05 — below the adjacent-bucket threshold.
+    # After stripping, "belleza," → "belleza" and the pair clears 0.10.
     sim = cluster._jaccard_words(
-        "Fiscalía de CDMX investiga asesinato de Carolina Flores ex reina de belleza en Polanco",
-        "Escalofriante video matan exreina de belleza mexicana de balazo en cabeza sospechan de suegra",
+        "Hallan sin vida a ex reina de belleza mexicana: su suegra sería sospechosa - Univision",
+        "Fiscalía de CDMX investiga asesinato de Carolina Flores, ex reina de belleza, en Polanco - La Jornada",
     )
-    assert sim < 0.10
+    assert sim >= cluster._ADJACENT_BUCKET_JACCARD_THRESHOLD
+
+
+def test_jaccard_words_belleza_cross_state_headlines_below_title_sim_threshold():
+    # The two ex-reina-de-belleza headline styles (factual vs. tabloid) share
+    # too few words to clear Stage 1c's 0.45 threshold — this gap remains
+    # until entity-aware or SLM-based merging is added.
+    sim = cluster._jaccard_words(
+        "Fiscalía de CDMX investiga asesinato de Carolina Flores, ex reina de belleza, en Polanco - La Jornada",
+        "Escalofriante video: matan a exreina de belleza mexicana de un balazo en la cabeza; sospechan de la suegra - Telemundo Las Vegas",
+    )
+    assert sim < cluster._TITLE_JACCARD_THRESHOLD
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +285,130 @@ def test_title_similarity_merge_different_groups_not_merged():
 
 
 # ---------------------------------------------------------------------------
+# _adjacent_bucket_merge
+# ---------------------------------------------------------------------------
+
+def test_adjacent_bucket_merge_same_state_group_merges():
+    """Adjacent buckets with the same (state, group) and Jaccard >= 0.10 merge."""
+    articles = _make_articles([
+        {
+            "state": "Ciudad de México", "group": "Desconocido",
+            "published_date": "2026-04-21T07:00:00+00:00",  # bucket 4112
+            "title": "Hallan sin vida a ex reina de belleza mexicana",
+            "url": "u1",
+        },
+        {
+            "state": "Ciudad de México", "group": "Desconocido",
+            "published_date": "2026-04-22T07:00:00+00:00",  # bucket 4113
+            "title": "Fiscalía de CDMX investiga asesinato de Carolina Flores ex reina de belleza",
+            "url": "u2",
+        },
+    ])
+    key_to_event = {
+        cluster._cluster_key(articles.iloc[0]): "eid-4112",
+        cluster._cluster_key(articles.iloc[1]): "eid-4113",
+    }
+    result = cluster._adjacent_bucket_merge(articles, key_to_event)
+    assert len(set(result.values())) == 1
+
+
+def test_adjacent_bucket_merge_low_overlap_stays_separate():
+    """Adjacent buckets with unrelated titles (Jaccard < 0.10) stay separate."""
+    articles = _make_articles([
+        {
+            "state": "Sinaloa", "group": "CDS",
+            "published_date": "2026-04-21T07:00:00+00:00",  # bucket 4112
+            "title": "Decomisan tonelada cocaína laboratorio clandestino Culiacán",
+            "url": "u1",
+        },
+        {
+            "state": "Sinaloa", "group": "CDS",
+            "published_date": "2026-04-22T07:00:00+00:00",  # bucket 4113
+            "title": "Arrestan líder financiero Cártel Sinaloa lavado dinero",
+            "url": "u2",
+        },
+    ])
+    key_to_event = {
+        cluster._cluster_key(articles.iloc[0]): "eid-4112",
+        cluster._cluster_key(articles.iloc[1]): "eid-4113",
+    }
+    result = cluster._adjacent_bucket_merge(articles, key_to_event)
+    assert len(set(result.values())) == 2
+
+
+def test_adjacent_bucket_merge_non_adjacent_buckets_not_merged():
+    """Buckets more than one step apart are never compared, even with identical titles."""
+    articles = _make_articles([
+        {
+            "state": "Jalisco", "group": "CJNG",
+            "published_date": "2026-04-17T07:00:00+00:00",  # bucket 4112
+            "title": "Detienen líder CJNG Guadalajara operativo nocturno",
+            "url": "u1",
+        },
+        {
+            "state": "Jalisco", "group": "CJNG",
+            "published_date": "2026-04-27T07:00:00+00:00",  # bucket 4114 (two steps away)
+            "title": "Detienen líder CJNG Guadalajara operativo nocturno",
+            "url": "u2",
+        },
+    ])
+    key_to_event = {
+        cluster._cluster_key(articles.iloc[0]): "eid-4112",
+        cluster._cluster_key(articles.iloc[1]): "eid-4114",
+    }
+    result = cluster._adjacent_bucket_merge(articles, key_to_event)
+    assert len(set(result.values())) == 2
+
+
+def test_adjacent_bucket_merge_different_states_not_merged():
+    """Different states are never merged by Stage 1d, even with adjacent buckets."""
+    articles = _make_articles([
+        {
+            "state": "Jalisco", "group": "CJNG",
+            "published_date": "2026-04-21T07:00:00+00:00",
+            "title": "Detienen líder CJNG Guadalajara operativo belleza reina",
+            "url": "u1",
+        },
+        {
+            "state": "Nayarit", "group": "CJNG",
+            "published_date": "2026-04-22T07:00:00+00:00",
+            "title": "Detienen líder CJNG Guadalajara operativo belleza reina",
+            "url": "u2",
+        },
+    ])
+    key_to_event = {
+        cluster._cluster_key(articles.iloc[0]): "eid-jalisco",
+        cluster._cluster_key(articles.iloc[1]): "eid-nayarit",
+    }
+    result = cluster._adjacent_bucket_merge(articles, key_to_event)
+    assert len(set(result.values())) == 2
+
+
+def test_adjacent_bucket_merge_desconocido_state_skipped():
+    """Desconocido state is in _NON_GEO — adjacent-bucket merge never runs on it."""
+    articles = _make_articles([
+        {
+            "state": "Desconocido", "group": "CJNG",
+            "published_date": "2026-04-21T07:00:00+00:00",
+            "title": "Detienen líder CJNG operativo belleza reina mexicana",
+            "url": "u1",
+        },
+        {
+            "state": "Desconocido", "group": "CJNG",
+            "published_date": "2026-04-22T07:00:00+00:00",
+            "title": "Detienen líder CJNG operativo belleza reina mexicana",
+            "url": "u2",
+        },
+    ])
+    key_to_event = {
+        cluster._cluster_key(articles.iloc[0]): "eid-a",
+        cluster._cluster_key(articles.iloc[1]): "eid-b",
+    }
+    result = cluster._adjacent_bucket_merge(articles, key_to_event)
+    assert len(set(result.values())) == 2
+
+
+# ---------------------------------------------------------------------------
 # cluster_articles — integration
 # ---------------------------------------------------------------------------
 
@@ -296,33 +433,32 @@ def test_cluster_articles_different_groups_separate_events():
     assert len(events) == 2
 
 
-def test_cluster_articles_bucket_boundary_splits_adjacent_days():
+def test_cluster_articles_bucket_boundary_merges_same_state_group():
     """
-    Known limitation: articles published one day apart can land in different
-    5-day buckets when a boundary falls between them.
+    Stage 1d regression: articles published on either side of a 5-day bucket
+    boundary (Apr 21 → bucket 4112, Apr 22 → bucket 4113) with the same state
+    and group should merge when their title Jaccard >= 0.10.
 
-    Apr 21 → bucket 4112, Apr 22 → bucket 4113, so these two articles about
-    the same homicide produce two events instead of one.
-
-    When cross-bucket merging is implemented, change the assertion to == 1.
+    Uses the actual punctuated+sourced title format from the CSV to catch the
+    "belleza," ≠ "belleza" punctuation bug that caused Jaccard to drop to 0.05.
     """
     articles = _make_articles([
         {
             "state": "Ciudad de México", "group": "Desconocido",
             "published_date": "2026-04-21T07:00:00+00:00",
-            "title": "Hallan sin vida a ex reina de belleza mexicana",
+            "title": "Hallan sin vida a ex reina de belleza mexicana: su suegra sería sospechosa de su muerte - Univision",
             "url": "u1",
         },
         {
             "state": "Ciudad de México", "group": "Desconocido",
             "published_date": "2026-04-22T07:00:00+00:00",
-            "title": "Fiscalía de CDMX investiga asesinato de Carolina Flores ex reina de belleza",
+            "title": "Fiscalía de CDMX investiga asesinato de Carolina Flores, ex reina de belleza, en Polanco - La Jornada",
             "url": "u2",
         },
     ])
     _, events = cluster.cluster_articles(articles)
-    # Currently two events due to bucket boundary — update to 1 when fixed.
-    assert len(events) == 2
+    assert len(events) == 1
+    assert events.iloc[0]["article_count"] == 2
 
 
 def test_cluster_articles_same_case_different_headline_styles_stay_separate():
