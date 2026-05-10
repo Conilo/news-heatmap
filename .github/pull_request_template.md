@@ -13,12 +13,14 @@
 
 - [ ] `pytest` — fast unit tests pass
 - [ ] `pytest tests/test_extract_governor.py --slm-live` — run if `src/extract.py` was modified
+- [ ] `pytest tests/test_cluster.py --slm-live` — run if `src/cluster.py` was modified
 - [ ] `pytest --live` — run if `src/fetch.py` was modified
 
 ## Checklist
 
 - [ ] CI unit tests pass (required for merge)
 - [ ] Governor SLM test passes if `src/extract.py` was changed
+- [ ] Cluster SLM test passes if `src/cluster.py` was changed
 - [ ] Live fetch test passes if `src/fetch.py` was changed
 - [ ] `README.md` updated if behavior or usage changed
 - [ ] Fixture CSV (`tests/fixtures/slm_eval/`) updated if new cases were added
