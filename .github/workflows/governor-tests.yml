@@ -4,6 +4,12 @@ on:
   pull_request:
     paths:
       - src/extract.py
+  push:
+    branches:
+      - main
+    paths:
+      - src/extract.py
+  workflow_dispatch:
 
 jobs:
   governor-tests:
