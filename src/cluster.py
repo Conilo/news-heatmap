@@ -1,14 +1,33 @@
 """
 Cluster articles into deduplicated events.
 
-Stage 1 (always runs): group articles by
-    (normalized_state, normalized_group, date_bucket)
-where date_bucket = floor(days_since_epoch / CLUSTER_WINDOW_DAYS).
-event_type is not part of the Stage-1 key (see ``_cluster_key``).
+Pipeline (all stages run on every call):
 
-Stage 2 (optional, SLM): for cross-key candidate pairs that share the same
-group + date_bucket but differ on state, ask the SLM whether
-they describe the same specific incident and merge if confirmed.
+  Stage 1  — Key assignment: group articles by (state, group, date_bucket).
+             Articles sharing the same key are merged into one event.
+             date_bucket = floor(days_since_epoch / CLUSTER_WINDOW_DAYS).
+             event_type is intentionally excluded from the key (see _cluster_key).
+
+  Stage 1b — Desconocido absorb: fold Desconocido-state clusters into a
+             known-state cluster when they share the same (group, date_bucket).
+
+  Stage 1c — Cross-state title-similarity merge: for events sharing the same
+             (group, date_bucket) but differing on state, merge when word-level
+             Jaccard similarity >= _TITLE_JACCARD_THRESHOLD (0.45).
+
+  Stage 1d — Adjacent-bucket merge: for events sharing the same (state, group)
+             but landing in consecutive date buckets, merge when Jaccard
+             similarity >= _ADJACENT_BUCKET_JACCARD_THRESHOLD (0.10).
+
+  Stage 2  — SLM disambiguation: for cross-state same-(group, bucket) pairs
+             whose Jaccard falls in the uncertain band
+             [_SLM_MIN_JACCARD, _TITLE_JACCARD_THRESHOLD), ask the SLM whether
+             the two headlines describe the same incident.  Zero Ollama calls
+             are made when no pairs fall in this band.
+             Controlled by the ``use_slm`` flag (default True).  Pass
+             ``use_slm=False`` to suppress all Ollama calls — intended for CI
+             pipelines and unit tests that should not require a running Ollama
+             instance.
 """
 
 from __future__ import annotations
@@ -388,8 +407,15 @@ def _adjacent_bucket_merge(
 
 
 # ---------------------------------------------------------------------------
-# Stage 2 — SLM disambiguation (optional)
+# Stage 2 — SLM disambiguation (trigger-based)
 # ---------------------------------------------------------------------------
+
+# Jaccard band that triggers an SLM call.
+# Below _SLM_MIN_JACCARD: headlines share too few words to be the same story.
+# Above _TITLE_JACCARD_THRESHOLD: already merged by Stage 1c.
+# Only the uncertain middle band [_SLM_MIN_JACCARD, _TITLE_JACCARD_THRESHOLD)
+# is sent to the SLM, making Stage 2 a no-op when no such pairs exist.
+_SLM_MIN_JACCARD = 0.02
 
 _SLM_DEDUP_PROMPT = """\
 Do the following two news headlines describe the exact same specific incident
@@ -428,74 +454,92 @@ def _stage2_merge(
     slm_progress: Callable[[int, int], None] | None = None,
 ) -> dict[tuple, str]:
     """
-    For articles whose Stage-1 key differs only in state but share
-    the same (group, date_bucket), optionally ask the SLM to merge them.
+    Trigger-based SLM disambiguation for cross-state same-(group, bucket) pairs.
 
-    Returns updated key_to_event mapping.
+    Only pairs whose title Jaccard falls in the uncertain band
+    [_SLM_MIN_JACCARD, _TITLE_JACCARD_THRESHOLD) are sent to the SLM:
+    - Below _SLM_MIN_JACCARD: no meaningful word overlap → skip (unrelated).
+    - Above _TITLE_JACCARD_THRESHOLD: already merged by Stage 1c → skip.
+
+    This makes Stage 2 a true no-op (zero Ollama calls) when all remaining
+    cross-state pairs are either clearly unrelated or already resolved.
+
+    Pass ``use_slm=False`` to suppress all Ollama calls regardless of
+    candidates — intended for CI and unit tests.
     """
     if not use_slm:
+        if slm_progress is not None:
+            slm_progress(0, 0)
         return key_to_event
+    from collections import defaultdict
 
-    # Index articles by their Stage-1 key
+    # Build representative title and size per event_id (same pattern as 1c/1d)
     articles = articles.copy()
     articles["_key"] = articles.apply(_cluster_key, axis=1)
     articles["_event_id"] = articles["_key"].map(key_to_event)
 
-    # Find candidate pairs: same group + date_bucket, different full key
+    rep_title: dict[str, str] = {}
+    event_size: dict[str, int] = {}
+    for eid, grp in articles.groupby("_event_id"):
+        confs = pd.to_numeric(grp["confidence"], errors="coerce")
+        best = confs.idxmax() if not confs.dropna().empty else grp.index[0]
+        rep_title[str(eid)] = str(grp.loc[best, "title"])
+        event_size[str(eid)] = len(grp)
+
+    # Collect candidate pairs: same (group, bucket), different event_id,
+    # Jaccard in the uncertain band.
     articles["_group_norm"] = articles["group"].apply(normalize_group)
     articles["_bucket"] = articles["published_date"].apply(_date_bucket)
 
-    # Group by (group, bucket) to find cross-key candidates
-    merge_map: dict[str, str] = {}  # old_event_id → new_event_id (canonical)
+    group_bucket_events: dict[tuple, list[str]] = defaultdict(list)
+    for key, eid in key_to_event.items():
+        state, group, bucket = _state_group_bucket(key)
+        group_bucket_events[(group, bucket)].append(eid)
 
-    groups = list(articles.groupby(["_group_norm", "_bucket"]))
-    total_pairs = 0
-    for _, bucket_group in groups:
-        event_ids = bucket_group["_event_id"].unique()
-        n = len(event_ids)
-        if n > 1:
-            total_pairs += n * (n - 1) // 2
+    candidate_pairs: list[tuple[str, str]] = []
+    for eids in group_bucket_events.values():
+        unique_eids = list(set(eids))
+        for i, eid_a in enumerate(unique_eids):
+            for eid_b in unique_eids[i + 1:]:
+                sim = _jaccard_words(rep_title.get(eid_a, ""), rep_title.get(eid_b, ""))
+                if _SLM_MIN_JACCARD <= sim < _TITLE_JACCARD_THRESHOLD:
+                    candidate_pairs.append((eid_a, eid_b))
 
-    done_pairs = 0
+    total = len(candidate_pairs)
+    if total == 0:
+        if slm_progress is not None:
+            slm_progress(0, 0)
+        return key_to_event
+
+    print(f"[cluster] Stage-2: {total} uncertain pair(s) sent to SLM")
+
+    merge_map: dict[str, str] = {}
     if slm_progress is not None:
-        slm_progress(done_pairs, total_pairs)
+        slm_progress(0, total)
 
-    for _, bucket_group in groups:
-        event_ids = bucket_group["_event_id"].unique()
-        if len(event_ids) <= 1:
+    for done, (eid_a, eid_b) in enumerate(candidate_pairs, 1):
+        canon_a = merge_map.get(eid_a, eid_a)
+        canon_b = merge_map.get(eid_b, eid_b)
+        if canon_a == canon_b:
+            if slm_progress is not None:
+                slm_progress(done, total)
             continue
 
-        # Compare each pair of distinct event_ids
-        for i, eid_a in enumerate(event_ids):
-            for eid_b in event_ids[i + 1:]:
-                # Resolve through any already-established merges
-                canon_a = merge_map.get(eid_a, eid_a)
-                canon_b = merge_map.get(eid_b, eid_b)
+        same, _conf = _slm_same_event(rep_title.get(canon_a, ""), rep_title.get(canon_b, ""))
+        if same:
+            keep = canon_a if event_size.get(canon_a, 0) >= event_size.get(canon_b, 0) else canon_b
+            drop = canon_b if keep == canon_a else canon_a
+            merge_map[drop] = keep
+            print(f"[cluster] Stage-2 merge: {rep_title.get(drop,'')[:50]} → {rep_title.get(keep,'')[:50]}")
 
-                done_pairs += 1
-                if slm_progress is not None:
-                    slm_progress(done_pairs, total_pairs)
-
-                if canon_a == canon_b:
-                    continue
-
-                title_a = bucket_group[bucket_group["_event_id"] == eid_a]["title"].iloc[0]
-                title_b = bucket_group[bucket_group["_event_id"] == eid_b]["title"].iloc[0]
-
-                same, _conf = _slm_same_event(str(title_a), str(title_b))
-                if same:
-                    # Merge eid_b → eid_a (keep alphabetically smaller for stability)
-                    keep = min(canon_a, canon_b)
-                    drop = max(canon_a, canon_b)
-                    merge_map[drop] = keep
-                    print(f"[cluster] Stage-2 merge: {drop[:8]}… → {keep[:8]}…")
+        if slm_progress is not None:
+            slm_progress(done, total)
 
     if not merge_map:
         return key_to_event
 
-    # Apply merge_map transitively to key_to_event
     def _resolve(eid: str) -> str:
-        seen = set()
+        seen: set[str] = set()
         while eid in merge_map and eid not in seen:
             seen.add(eid)
             eid = merge_map[eid]
@@ -510,11 +554,21 @@ def _stage2_merge(
 
 def cluster_articles(
     articles: pd.DataFrame,
-    use_slm: bool = False,
+    use_slm: bool = True,
     progress_callback: Callable[[float, str], None] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Cluster a DataFrame of articles into events.
+
+    Stage 2 (SLM disambiguation) runs automatically but only generates Ollama
+    calls for cross-state pairs whose title Jaccard falls in the uncertain band
+    [_SLM_MIN_JACCARD, _TITLE_JACCARD_THRESHOLD).  It is a no-op — zero calls —
+    when all remaining pairs are clearly unrelated or already resolved by
+    Stages 1b–1d.
+
+    Pass ``use_slm=False`` to suppress all Stage 2 Ollama calls.  Stages 1–1d
+    (fully deterministic) still run.  Intended for CI pipelines and tests that
+    should not require a running Ollama instance.
 
     Optional ``progress_callback`` receives ``(ratio_0_to_1_within_clustering, message)``
     for UI feedback (e.g. Streamlit progress).
@@ -536,17 +590,17 @@ def cluster_articles(
     if "event_id" not in articles.columns:
         articles["event_id"] = ""
 
-    # Stage 1: assign a UUID to each unique (state, group, date_bucket) key.
+    # Stage 1 — key assignment.
     #
-    # Stability: reuse existing event_ids so callers can track events across
-    # re-runs.  BUT only reuse an event_id for a key when that id is not also
-    # claimed by a *different* key — which happens when a previous bad cluster
-    # merged distinct events and the bad event_id then got written to the CSV.
-    # In that case the conflicting key gets a fresh UUID instead.
-    #
+    # Assign a UUID to each unique (state, group, date_bucket) key.
+    # Existing event_ids are reused for stability (callers can track events
+    # across re-runs), except when an id is claimed by more than one distinct
+    # key — a sign of a previously over-merged cluster — in which case the
+    # conflicting keys each receive a fresh UUID.
+
     _p(0.02, "Assigning cluster keys…")
 
-    # Step A: gather the majority event_id for each cluster key.
+    # Stage 1, step A: gather the existing majority event_id per cluster key.
     from collections import Counter as _Counter
     key_eid_candidates: dict[tuple, list[str]] = {}
     for idx, row in articles.iterrows():
@@ -555,15 +609,14 @@ def cluster_articles(
         if existing and not pd.isna(articles.loc[idx, "event_id"]):
             key_eid_candidates.setdefault(key, []).append(existing)
 
-    # Step B: detect which event_ids are claimed by more than one distinct key
-    #         (sign of a previously over-merged cluster).
+    # Stage 1, step B: detect event_ids claimed by more than one distinct key.
     eid_to_keys: dict[str, set] = {}
     for key, eids in key_eid_candidates.items():
         majority_eid = _Counter(eids).most_common(1)[0][0]
         eid_to_keys.setdefault(majority_eid, set()).add(key)
     contested_eids = {eid for eid, keys in eid_to_keys.items() if len(keys) > 1}
 
-    # Step C: build key_to_event, generating a fresh UUID for contested ids.
+    # Stage 1, step C: build key_to_event, issuing fresh UUIDs for contested ids.
     key_to_event: dict[tuple, str] = {}
     for idx, row in articles.iterrows():
         key = _cluster_key(row)
@@ -576,33 +629,28 @@ def cluster_articles(
                     continue
             key_to_event[key] = str(uuid.uuid4())
 
-    # Stage 1b: absorb Desconocido-state clusters into unambiguous state clusters
+    # Stage 1b — Desconocido absorb.
     key_to_event = _absorb_desconocido(key_to_event)
 
-    # Stage 1c: title-similarity merge for cross-state clusters (same group+bucket)
+    # Stage 1c — cross-state title-similarity merge (same group + bucket).
     key_to_event = _title_similarity_merge(articles, key_to_event)
 
-    # Stage 1d: adjacent-bucket merge for same-state same-group clusters
+    # Stage 1d — adjacent-bucket merge (same state + group).
     key_to_event = _adjacent_bucket_merge(articles, key_to_event)
 
     _p(0.22, "Rule-based merges complete…")
 
-    # Stage 2 (optional SLM disambiguation)
+    # Stage 2 — SLM disambiguation.
     def _slm_prog(done: int, total: int) -> None:
         if total == 0:
-            _p(0.82, "SLM disambiguation: no candidate pairs")
+            _p(0.82, "SLM disambiguation: disabled" if not use_slm else "SLM disambiguation: no uncertain pairs")
             return
         _p(
             0.26 + (done / total) * 0.58,
             f"SLM disambiguation ({done}/{total})…",
         )
 
-    if use_slm:
-        key_to_event = _stage2_merge(
-            articles, key_to_event, use_slm=True, slm_progress=_slm_prog
-        )
-    else:
-        _p(0.82, "Skipping SLM disambiguation…")
+    key_to_event = _stage2_merge(articles, key_to_event, use_slm=use_slm, slm_progress=_slm_prog)
 
     _p(0.88, "Building event list…")
 
@@ -624,11 +672,14 @@ def cluster_articles(
 
 
 def recompute_events(
-    use_slm: bool = False,
+    use_slm: bool = True,
     progress_callback: Callable[[float, str], None] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Reload articles.csv, re-run clustering from scratch, save both CSVs.
+
+    Pass ``use_slm=False`` to suppress Stage 2 Ollama calls (see
+    ``cluster_articles`` for details).
 
     Returns (articles_df, events_df).
     """
@@ -642,7 +693,7 @@ def recompute_events(
     if progress_callback:
         progress_callback(0.01, f"Loaded {len(articles)} articles…")
 
-    print(f"[cluster] Clustering {len(articles)} articles (SLM={use_slm})…")
+    print(f"[cluster] Clustering {len(articles)} articles (SLM={'on' if use_slm else 'off'})…")
 
     def _cluster_progress(ratio: float, msg: str) -> None:
         if progress_callback:
@@ -674,5 +725,5 @@ def recompute_events(
 
 
 if __name__ == "__main__":
-    arts, evts = recompute_events(use_slm=False)
+    arts, evts = recompute_events()
     print(evts[["state", "group", "event_type", "article_count", "confidence", "canonical_title"]].to_string())

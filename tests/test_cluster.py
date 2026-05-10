@@ -285,6 +285,88 @@ def test_title_similarity_merge_different_groups_not_merged():
 
 
 # ---------------------------------------------------------------------------
+# _stage2_merge — trigger-based SLM disambiguation
+# ---------------------------------------------------------------------------
+
+def test_stage2_merge_no_candidates_zero_slm_calls(monkeypatch):
+    """Stage 2 is a no-op (no SLM calls) when all pairs are outside the uncertain band."""
+    slm_calls = []
+    monkeypatch.setattr(cluster, "_slm_same_event", lambda a, b: slm_calls.append((a, b)) or (False, 0.0))
+
+    articles = _make_articles([
+        # Jaccard = 0.0 → below _SLM_MIN_JACCARD → skipped
+        {"state": "Jalisco",  "group": "CJNG", "url": "u1",
+         "title": "Detienen líder CJNG Guadalajara operativo nocturno armamento"},
+        {"state": "Sinaloa",  "group": "CJNG", "url": "u2",
+         "title": "Decomisan cocaína laboratorio clandestino Culiacán puerto marítimo"},
+    ])
+    key_to_event = {
+        cluster._cluster_key(articles.iloc[0]): "eid-a",
+        cluster._cluster_key(articles.iloc[1]): "eid-b",
+    }
+    cluster._stage2_merge(articles, key_to_event)
+    assert slm_calls == []
+
+
+def test_stage2_merge_uncertain_band_triggers_slm(monkeypatch):
+    """Pairs with Jaccard in [_SLM_MIN_JACCARD, _TITLE_JACCARD_THRESHOLD) reach the SLM."""
+    slm_calls = []
+    monkeypatch.setattr(cluster, "_slm_same_event", lambda a, b: slm_calls.append((a, b)) or (False, 0.0))
+
+    # These titles share "belleza" and "reina" across different states →
+    # Jaccard ≈ 0.11 — inside the uncertain band.
+    articles = _make_articles([
+        {"state": "Ciudad de México", "group": "Desconocido", "url": "u1",
+         "title": "Fiscalía investiga asesinato Carolina Flores ex reina belleza Polanco"},
+        {"state": "Baja California",  "group": "Desconocido", "url": "u2",
+         "title": "Matan exreina belleza mexicana balazo cabeza sospechan suegra crimen"},
+    ])
+    key_to_event = {
+        cluster._cluster_key(articles.iloc[0]): "eid-cdmx",
+        cluster._cluster_key(articles.iloc[1]): "eid-bc",
+    }
+    cluster._stage2_merge(articles, key_to_event)
+    assert len(slm_calls) == 1
+
+
+def test_stage2_merge_above_threshold_no_slm_calls(monkeypatch):
+    """Pairs already above _TITLE_JACCARD_THRESHOLD are skipped (handled by Stage 1c)."""
+    slm_calls = []
+    monkeypatch.setattr(cluster, "_slm_same_event", lambda a, b: slm_calls.append((a, b)) or (False, 0.0))
+
+    articles = _make_articles([
+        {"state": "Jalisco", "group": "CJNG", "url": "u1",
+         "title": "Detienen líder CJNG Guadalajara operativo nocturno armamento captura"},
+        {"state": "Nayarit", "group": "CJNG", "url": "u2",
+         "title": "Detienen líder CJNG Guadalajara operativo nocturno armamento captura"},
+    ])
+    key_to_event = {
+        cluster._cluster_key(articles.iloc[0]): "eid-jalisco",
+        cluster._cluster_key(articles.iloc[1]): "eid-nayarit",
+    }
+    cluster._stage2_merge(articles, key_to_event)
+    assert slm_calls == []
+
+
+def test_stage2_merge_slm_yes_merges_events(monkeypatch):
+    """When the SLM returns same_event=True the two events are merged."""
+    monkeypatch.setattr(cluster, "_slm_same_event", lambda a, b: (True, 0.9))
+
+    articles = _make_articles([
+        {"state": "Ciudad de México", "group": "Desconocido", "url": "u1",
+         "title": "Fiscalía investiga asesinato Carolina Flores ex reina belleza Polanco"},
+        {"state": "Baja California",  "group": "Desconocido", "url": "u2",
+         "title": "Matan exreina belleza mexicana balazo cabeza sospechan suegra crimen"},
+    ])
+    key_to_event = {
+        cluster._cluster_key(articles.iloc[0]): "eid-cdmx",
+        cluster._cluster_key(articles.iloc[1]): "eid-bc",
+    }
+    result = cluster._stage2_merge(articles, key_to_event)
+    assert len(set(result.values())) == 1
+
+
+# ---------------------------------------------------------------------------
 # _adjacent_bucket_merge
 # ---------------------------------------------------------------------------
 
@@ -419,7 +501,7 @@ def test_cluster_articles_basic_grouping():
         {"state": "Sinaloa", "group": "CDS", "source": "B", "url": "u2"},
         {"state": "Sinaloa", "group": "CDS", "source": "C", "url": "u3"},
     ])
-    _, events = cluster.cluster_articles(articles)
+    _, events = cluster.cluster_articles(articles, use_slm=False)
     assert len(events) == 1
     assert events.iloc[0]["article_count"] == 3
 
@@ -429,7 +511,7 @@ def test_cluster_articles_different_groups_separate_events():
         {"state": "Jalisco", "group": "CJNG", "url": "u1"},
         {"state": "Jalisco", "group": "CDS",  "url": "u2"},
     ])
-    _, events = cluster.cluster_articles(articles)
+    _, events = cluster.cluster_articles(articles, use_slm=False)
     assert len(events) == 2
 
 
@@ -456,21 +538,19 @@ def test_cluster_articles_bucket_boundary_merges_same_state_group():
             "url": "u2",
         },
     ])
-    _, events = cluster.cluster_articles(articles)
+    _, events = cluster.cluster_articles(articles, use_slm=False)
     assert len(events) == 1
     assert events.iloc[0]["article_count"] == 2
 
 
-def test_cluster_articles_same_case_different_headline_styles_stay_separate():
+def test_cluster_articles_same_case_different_headline_styles_stay_separate_without_slm():
     """
-    Known gap: sensationalist vs. factual headlines about the same incident
-    share too few words to clear the 0.45 Jaccard threshold (actual: ~0.056).
+    Without SLM (use_slm=False), cross-state pairs with Jaccard in the uncertain
+    band [0.02, 0.45) are not merged — Stage 2 is suppressed entirely.
 
-    This is the ex-reina-de-belleza scenario: one article covers the murder
-    (factual/legal framing), the other is a tabloid reconstruction.  No merge
-    happens even though they're in the same bucket with the same group.
-
-    When entity-aware or SLM-based merging is added, change assertion to == 1.
+    This is the ex-reina-de-belleza scenario: factual vs. tabloid headline styles
+    share too few words for Stage 1c (Jaccard ≈ 0.056 < 0.45) and would normally
+    reach Stage 2 for SLM disambiguation.  With use_slm=False, two events remain.
     """
     articles = _make_articles([
         {
@@ -486,6 +566,35 @@ def test_cluster_articles_same_case_different_headline_styles_stay_separate():
             "url": "u2",
         },
     ])
-    _, events = cluster.cluster_articles(articles)
-    # Jaccard ≈ 0.056 → no title-similarity merge → two events. Update to 1 when fixed.
+    _, events = cluster.cluster_articles(articles, use_slm=False)
     assert len(events) == 2
+
+
+@pytest.mark.slm_live
+def test_cluster_articles_slm_merges_uncertain_band_pair(monkeypatch):
+    """
+    With use_slm=True, a cross-state pair in the uncertain Jaccard band reaches
+    Stage 2 and is merged when the SLM confirms it is the same event.
+
+    Marked slm_live because it exercises the Stage 2 code path end-to-end
+    (monkeypatching the Ollama call to keep it offline-safe).
+    Run with: pytest --slm-live
+    """
+    monkeypatch.setattr(cluster, "_slm_same_event", lambda a, b: (True, 0.92))
+
+    articles = _make_articles([
+        {
+            "state": "Ciudad de México", "group": "Desconocido",
+            "published_date": "2026-04-22T07:00:00+00:00",
+            "title": "Fiscalía de CDMX investiga asesinato de Carolina Flores ex reina de belleza en Polanco",
+            "url": "u1",
+        },
+        {
+            "state": "Baja California", "group": "Desconocido",
+            "published_date": "2026-04-24T07:00:00+00:00",
+            "title": "Escalofriante video matan exreina de belleza mexicana de balazo en cabeza sospechan de suegra",
+            "url": "u2",
+        },
+    ])
+    _, events = cluster.cluster_articles(articles, use_slm=True)
+    assert len(events) == 1
