@@ -128,8 +128,15 @@ def _run_pipeline() -> None:
     progress.empty()
     append_new(extracted)
 
-    with st.spinner("Clustering articles into events..."):
-        recompute_events(use_slm=False)
+    cluster_progress = st.progress(0.0, text="Clustering articles into events…")
+
+    def _on_cluster_progress(ratio: float, msg: str) -> None:
+        cluster_progress.progress(min(1.0, max(0.0, ratio)), text=msg)
+
+    try:
+        recompute_events(progress_callback=_on_cluster_progress)
+    finally:
+        cluster_progress.empty()
 
     st.success(f"Added {len(extracted)} new articles and updated events.")
     st.cache_data.clear()
@@ -159,8 +166,15 @@ def _reprocess_cached_articles() -> None:
     progress.empty()
     save(pd.DataFrame(updated))
 
-    with st.spinner("Rebuilding events from articles…"):
-        recompute_events(use_slm=False)
+    cluster_progress = st.progress(0.0, text="Rebuilding events from articles…")
+
+    def _on_cluster_progress(ratio: float, msg: str) -> None:
+        cluster_progress.progress(min(1.0, max(0.0, ratio)), text=msg)
+
+    try:
+        recompute_events(progress_callback=_on_cluster_progress)
+    finally:
+        cluster_progress.empty()
 
     st.success(f"Reprocessed {total} cached articles and updated events.")
     st.cache_data.clear()
@@ -182,7 +196,6 @@ def _recluster_from_cache() -> None:
 
     try:
         articles_out, events_out = recompute_events(
-            use_slm=True,
             progress_callback=_on_progress,
         )
     finally:
