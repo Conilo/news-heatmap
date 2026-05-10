@@ -142,3 +142,11 @@ The `--live` test asserts that at least 90% of fetched articles are both crime-r
 The **governor-tier** test (`test_extract_governor.py`) runs against `tests/fixtures/slm_eval/governor_cases.csv`: 16 hand-crafted cases where the correct `state` and `event_type` are unambiguous from the headline alone (explicit state name, exact priority-rule trigger keyword). Threshold is **100%** — a single miss means the extractor is broken, not merely imprecise. Run this after any prompt or model change before the full eval. See `tests/fixtures/slm_eval/README.md` for the case breakdown and how to add new cases.
 
 The `--slm-live` eval (`test_extract_slm_eval.py`) needs rows with hand-filled `expected_state` in `tests/fixtures/slm_eval/cases.csv` (see that folder’s README). It **fails** if state accuracy on eligible rows falls below **95%** — designed for hard, ambiguous cases where some model drift is tolerable.
+
+### GitHub Actions and the Ollama model cache
+
+Workflows **Cluster SLM Tests** and **Governor SLM Tests** install Ollama and cache `~/.ollama/models` under a key derived from `MODEL_NAME` in `user_config.py`. They run on matching pull requests, on **push to `main`** when `src/cluster.py` or `src/extract.py` changes (so **main seeds a shared cache** other branches can restore), and manually via **workflow_dispatch** in the Actions tab.
+
+**Same-repo PRs** can reuse that cache after `main` has run once with the relevant path change. **Pull requests from forks** cannot use the base repository’s Actions cache the same way; CI may download the full model on every run.
+
+**Checking that caching works:** open the workflow run in GitHub Actions and confirm the “Cache Ollama model” step logs **Cache restored** (not “Cache not found”). After landing this behavior on `main`, a new PR that touches only `src/cluster.py` or `src/extract.py` should restore the model on the **first** push without re-downloading the full blob every time.
