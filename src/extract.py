@@ -95,9 +95,11 @@ event_type:
      "motín": use "disturbio" regardles of what the body says. The body may describe
      a prior arrest that triggered the disturbio — that does not change the classification.
 
-  2. "detención" — headline contains any of: "detienen", "detuvo", "detenidos", "detención",
-     "capturan", "capturó", "captura", "capturado", "arrestan", "arrestados", "arresta",
-     "arrestó", "aprehenden", "vinculan a proceso". Use "detención" even when:
+  2. "detención" — headline contains any of: "detienen", "detuvo", "detenidos", "detenidas",
+     "detención", "detener", "detenido", "detenida", "detuvieron",
+     "capturan", "capturó", "captura", "capturado", "capturada", "capturas",
+     "arrestan", "arrestados", "arrestadas", "arresta", "arrestó", "arrestado", "arrestada",
+     "aprehenden", "aprehendió", "aprehendido", "vinculan a proceso". Use "detención" even when:
      - the capture is for a past crime (e.g. "Cuatro detenidos por homicidio" → "detención", NOT "homicidio")
      - the body describes drug trafficking, money laundering, or cartel operations (→ still "detención", NOT "narcotráfico")
      - the arrest occurs abroad (state="Internacional" but event_type still "detención")
@@ -106,7 +108,14 @@ event_type:
   3. "incautación" — headline contains "decomisan", "aseguran", "incautan" and a drug/weapon
      quantity. Use "incautación" even when arrests are also mentioned.
 
-  4. "narcotráfico" — article describes drug trafficking operations, networks, or supply
+  4. "extorsión" — article describes extortion demands, forced payments ("cobro de piso"),
+     or systematic criminal harassment ("hostigamiento") targeting businesses, merchants,
+     communities, or individuals. Reports by civic associations, business chambers, or
+     authorities documenting an ongoing extortion campaign also qualify.
+     Do NOT use for: articles that only mention extortion in passing as background context
+     without describing a specific campaign or incident (→ "otro").
+
+  5. "narcotráfico" — article describes drug trafficking operations, networks, or supply
      chains; or reports a government indictment, formal accusation, sanction, or extradition
      request specifically for drug trafficking crimes (including officials or politicians
      accused of coordinating with cartels to traffic drugs).
@@ -117,17 +126,17 @@ event_type:
      (→ "otro"); or articles that only mention cartels in passing without describing a
      specific trafficking operation or legal action.
 
-  5. "homicidio" — headline says "asesinado", "asesinada", "ejecutado", "ejecutada",
+  6. "homicidio" — headline says "asesinado", "asesinada", "ejecutado", "ejecutada",
      "balaceado", "matan", "mató", "ultimaron" or describes a deliberate killing.
      Use "homicidio" when the death is clearly intentional/violent, even if the word
      "muerto" also appears.
 
-  6. "muerte" — headline says "fallece", "muere" or "muerto" AND the headline itself does
+  7. "muerte" — headline says "fallece", "muere" or "muerto" AND the headline itself does
      NOT use a deliberate-killing verb ("asesinado", "ejecutado", "matan", "mató", etc.).
      Use "muerte" even when the body describes violence, wounds, or a shooting — only the
      headline's own wording matters here. Do NOT let body context flip "muerte" to "homicidio".
 
-  7. "otro" — article is a biographical profile, an InSight Crime entry,
+  8. "otro" — article is a biographical profile, an InSight Crime entry,
      a narcocorrido or rap/music cultural analysis, a political party statement, a
      retrospective with no specific current criminal event, a public opinion survey about
      security or drugs, or editorial/political analysis about the diplomatic impact of
@@ -200,6 +209,12 @@ Output:
 {"state": "Baja California", "municipality": "Tijuana", "group": "Desconocido", "event_type": "muerte", "confidence": 0.87}
 
 Input:
+  Title: Asociación Civil reporta hostigamiento del crimen organizado a comerciantes en Nayarit
+  Article: Comerciantes de Tepic denunciaron ante la Asociación Civil Empresarios Unidos que grupos del crimen organizado les exigen pagos semanales bajo amenaza de violencia. La organización documentó más de 40 casos de cobro de piso en tres colonias del municipio.
+Output:
+{"state": "Nayarit", "municipality": "Tepic", "group": "Desconocido", "event_type": "extorsión", "confidence": 0.88}
+
+Input:
   Title: DEA arresta en Chicago a operador financiero del Cártel de Sinaloa
   Article: Agentes de la DEA detuvieron en Chicago a un ciudadano mexicano identificado como lavador de dinero del Cártel de Sinaloa. El detenido es acusado de mover decenas de millones de dólares de ganancias del narcotráfico a través de negocios fachada en Estados Unidos.
 Output:
@@ -213,7 +228,6 @@ _FALLBACK: dict[str, Any] = {
     "event_type": "otro",
     "confidence": 0.0,
 }
-
 
 def _geo_normalize(text: str) -> str:
     folded = unicodedata.normalize("NFD", text)
