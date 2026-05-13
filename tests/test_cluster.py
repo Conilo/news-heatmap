@@ -598,3 +598,45 @@ def test_cluster_articles_slm_merges_uncertain_band_pair(monkeypatch):
     ])
     _, events = cluster.cluster_articles(articles, use_slm=True)
     assert len(events) == 1
+
+
+# ---------------------------------------------------------------------------
+# Cross-group Stage 2 merge (Issue: Azcapotzalco homicide split across groups)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.slm_live
+def test_stage2_merges_cross_group_same_state_bucket_pair(monkeypatch):
+    """
+    Two articles about the same homicide in the same state+bucket but attributed
+    to different cartel groups should be merged by Stage 2 when the SLM confirms
+    they describe the same event.
+    """
+    monkeypatch.setattr(cluster, "_slm_same_event", lambda a, b: (True, 0.91))
+
+    articles = _make_articles([
+        {
+            "state": "Ciudad de México", "group": "Los Julios",
+            "published_date": "2026-04-30T03:00:00+00:00",
+            "title": "Multihomicidio en Azcapotzalco detenido sostenía relación con una de las víctimas",
+            "url": "u1",
+        },
+        {
+            "state": "Ciudad de México", "group": "Unión Tepito",
+            "published_date": "2026-05-01T04:00:00+00:00",
+            "title": "La cacería de 24 horas para dar con los asesinos de Azcapotzalco",
+            "url": "u2",
+        },
+    ])
+    _, events = cluster.cluster_articles(articles, use_slm=True)
+    assert len(events) == 1
+
+
+# ---------------------------------------------------------------------------
+# GROUP_ALIASES canonicalization for Unión Tepito variants
+# ---------------------------------------------------------------------------
+
+def test_normalize_group_union_tepito_variants():
+    """'La Unión Tepito' and 'Unión Tepito' must resolve to the same canonical name."""
+    from config import normalize_group
+    assert normalize_group("Unión Tepito") == normalize_group("La Unión Tepito")
+    assert normalize_group("union tepito") == normalize_group("Unión Tepito")

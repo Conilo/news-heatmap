@@ -264,7 +264,7 @@ def _title_similarity_merge(
     # Map event_id → articles belonging to it
     articles = articles.copy()
     articles["_key"] = articles.apply(_cluster_key, axis=1)
-    articles["_event_id"] = articles["_key"].map(key_to_event)
+    articles["_event_id"] = articles["_key"].map(key_to_event.get)
     articles["_group"] = articles["group"].apply(normalize_group)
     articles["_bucket"] = articles["published_date"].apply(_date_bucket)
 
@@ -353,7 +353,7 @@ def _adjacent_bucket_merge(
     # Build representative title and size per event_id
     articles = articles.copy()
     articles["_key"] = articles.apply(_cluster_key, axis=1)
-    articles["_event_id"] = articles["_key"].map(key_to_event)
+    articles["_event_id"] = articles["_key"].map(key_to_event.get)
 
     rep_title: dict[str, str] = {}
     event_size: dict[str, int] = {}
@@ -476,7 +476,7 @@ def _stage2_merge(
     # Build representative title and size per event_id (same pattern as 1c/1d)
     articles = articles.copy()
     articles["_key"] = articles.apply(_cluster_key, axis=1)
-    articles["_event_id"] = articles["_key"].map(key_to_event)
+    articles["_event_id"] = articles["_key"].map(key_to_event.get)
 
     rep_title: dict[str, str] = {}
     event_size: dict[str, int] = {}
@@ -486,24 +486,46 @@ def _stage2_merge(
         rep_title[str(eid)] = str(grp.loc[best, "title"])
         event_size[str(eid)] = len(grp)
 
-    # Collect candidate pairs: same (group, bucket), different event_id,
-    # Jaccard in the uncertain band.
+    # Collect candidate pairs in the Jaccard uncertain band from two dimensions:
+    #   (a) cross-state same-(group, bucket): catches same incident covered by
+    #       articles with different state attributions.
+    #   (b) cross-group same-(state, bucket): catches same incident attributed to
+    #       different criminal groups by different sources (e.g. "Los Julios" vs
+    #       "Unión Tepito" for the same homicide).
     articles["_group_norm"] = articles["group"].apply(normalize_group)
     articles["_bucket"] = articles["published_date"].apply(_date_bucket)
 
     group_bucket_events: dict[tuple, list[str]] = defaultdict(list)
+    state_bucket_events: dict[tuple, list[str]] = defaultdict(list)
     for key, eid in key_to_event.items():
         state, group, bucket = _state_group_bucket(key)
         group_bucket_events[(group, bucket)].append(eid)
+        if state not in _NON_GEO:
+            state_bucket_events[(state, bucket)].append(eid)
 
+    seen_pairs: set[tuple[str, str]] = set()
     candidate_pairs: list[tuple[str, str]] = []
+
+    def _add_candidate(eid_a: str, eid_b: str) -> None:
+        pair = (min(eid_a, eid_b), max(eid_a, eid_b))
+        if pair in seen_pairs:
+            return
+        seen_pairs.add(pair)
+        sim = _jaccard_words(rep_title.get(eid_a, ""), rep_title.get(eid_b, ""))
+        if _SLM_MIN_JACCARD <= sim < _TITLE_JACCARD_THRESHOLD:
+            candidate_pairs.append((eid_a, eid_b))
+
     for eids in group_bucket_events.values():
         unique_eids = list(set(eids))
         for i, eid_a in enumerate(unique_eids):
             for eid_b in unique_eids[i + 1:]:
-                sim = _jaccard_words(rep_title.get(eid_a, ""), rep_title.get(eid_b, ""))
-                if _SLM_MIN_JACCARD <= sim < _TITLE_JACCARD_THRESHOLD:
-                    candidate_pairs.append((eid_a, eid_b))
+                _add_candidate(eid_a, eid_b)
+
+    for eids in state_bucket_events.values():
+        unique_eids = list(set(eids))
+        for i, eid_a in enumerate(unique_eids):
+            for eid_b in unique_eids[i + 1:]:
+                _add_candidate(eid_a, eid_b)
 
     total = len(candidate_pairs)
     if total == 0:

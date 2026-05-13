@@ -301,6 +301,14 @@ GROUP_ALIASES: dict[str, str] = {
     # Los Viagras
     "los viagras": "Los Viagras",
     "viagras": "Los Viagras",
+    # Unión Tepito
+    "union tepito": "Unión Tepito",
+    "unión tepito": "Unión Tepito",
+    "la union tepito": "Unión Tepito",
+    "la unión tepito": "Unión Tepito",
+    # Los Julios
+    "los julios": "Los Julios",
+    "julios": "Los Julios",
 }
 
 
